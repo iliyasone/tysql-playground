@@ -28,6 +28,34 @@ export default function Header() {
       </div>
       <nav className="flex shrink-0 items-center gap-1">
         <a
+          href="https://github.com/iliyasone/metatypes/blob/main/THESIS.pdf"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="The research behind tysql: metatypes (THESIS.pdf)"
+          className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
+        >
+          <svg
+            viewBox="0 0 16 16"
+            width="18"
+            height="18"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path d="M4 1.75C4 .784 4.784 0 5.75 0h5.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0 1 14.25 16h-8.5A1.75 1.75 0 0 1 4 14.25V1.75Zm-2.5 3.5a.75.75 0 0 1 .75.75v8.25c0 .69.56 1.25 1.25 1.25h8.25a.75.75 0 0 1 0 1.5H3.5A2.75 2.75 0 0 1 .75 14.25V6a.75.75 0 0 1 .75-.75Zm10-3.75h-5.75a.25.25 0 0 0-.25.25v12.5c0 .138.112.25.25.25h8.5a.25.25 0 0 0 .25-.25V5h-2.25A1.75 1.75 0 0 1 11.5 3.25V1.5Zm1.5.56v1.19c0 .138.112.25.25.25h1.19L13 2.06Z" />
+          </svg>
+          <span className="hidden text-xs sm:inline">thesis</span>
+        </a>
+        <a
+          href="https://github.com/iliyasone/metatypes"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="metatypes — the research repo behind tysql"
+          className="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
+        >
+          <GitHubIcon />
+          <span className="hidden text-xs sm:inline">metatypes</span>
+        </a>
+        <a
           href="https://github.com/iliyasone/tysql"
           target="_blank"
           rel="noopener noreferrer"

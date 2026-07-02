@@ -47,6 +47,24 @@ npm run dev                     # UI on 127.0.0.1:3000 (proxies /api/* to 5328)
 3. Commit `.github/workflows/redeploy-playground.yml` (already prepared in the
    tysql repo) — every push to tysql `main` now redeploys the playground.
 
+## Vercel quirk: stripped `.pyi` / `py.typed`
+
+Vercel's Python bundler strips `*.pyi` and `py.typed` from installed
+dependencies (`shouldStripVendorFile` in
+[vercel/vercel `packages/python`](https://github.com/vercel/vercel/tree/main/packages/python)) —
+which deletes mypy's entire bundled typeshed and unmarks tysql/typemap as
+typed. The playground works around both at cold start:
+
+- [`api/typeshed.tar.gz`](api/typeshed.tar.gz) (the fork's typeshed, tarballs
+  survive bundling) is extracted to `/tmp` and passed via
+  `--custom-typeshed-dir`. Regenerate it after the fork's typeshed changes:
+  `tar -czf api/typeshed.tar.gz -C .venv/lib/python3.14/site-packages/mypy typeshed`
+- `tysql`/`typemap` are mirrored to `/tmp` with `py.typed` restored and served
+  through `MYPYPATH`.
+
+`GET /api/check?debug=1` reports the deployed state (marker file, typeshed
+file count, applied flags, and a self-check run).
+
 ## Notes
 
 - The first check after an idle period is a cold start (~5–10 s: interpreter

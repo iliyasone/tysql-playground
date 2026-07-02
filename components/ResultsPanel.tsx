@@ -103,20 +103,23 @@ function CheckDone({
   const { diagnostics, exit_code, duration_ms, stdout, stderr } = result;
   const errorCount = diagnostics.filter((d) => d.severity === "error").length;
   const clean = exit_code === 0;
+  // Exit codes other than 0/1 (or a non-zero exit with nothing parsed) mean the
+  // checker itself failed — never dress that up as a result.
+  const crashed = (exit_code !== 0 && exit_code !== 1) || (!clean && diagnostics.length === 0);
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-2">
         <div className="flex items-center gap-2 text-xs">
-          {clean ? (
+          {crashed ? (
+            <span className="font-medium text-error">
+              Checker failed (exit code {exit_code})
+            </span>
+          ) : clean ? (
             <span className="font-medium text-success">No issues found</span>
-          ) : exit_code === 1 ? (
+          ) : (
             <span className="font-medium text-error">
               {errorCount} {errorCount === 1 ? "error" : "errors"}
-            </span>
-          ) : (
-            <span className="font-medium text-warning">
-              Checker exited with code {exit_code}
             </span>
           )}
           <span className="text-text-faint">·</span>
@@ -134,7 +137,18 @@ function CheckDone({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto">
-        {raw ? (
+        {crashed ? (
+          <div className="p-4">
+            <p className="mb-2 text-xs text-text-muted">
+              The type checker did not produce a result — this is a playground
+              problem, not an error in your snippet. Raw output:
+            </p>
+            <pre className="whitespace-pre-wrap break-words rounded-md border border-error/30 bg-error/5 p-3 font-mono text-xs leading-relaxed text-text">
+              {stdout || "(stdout empty)"}
+              {stderr ? `\n\n--- stderr ---\n${stderr}` : "\n\n(stderr empty)"}
+            </pre>
+          </div>
+        ) : raw ? (
           <pre className="whitespace-pre-wrap break-words p-4 font-mono text-xs leading-relaxed text-text-muted">
             {stdout || "(stdout empty)"}
             {stderr ? `\n\n--- stderr ---\n${stderr}` : ""}
