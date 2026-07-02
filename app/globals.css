@@ -1,26 +1,90 @@
 @import "tailwindcss";
 
+/* Dark-first, technical palette. Near-black, one restrained accent. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #0b0c0e;
+  --bg-panel: #101216;
+  --bg-elevated: #15181d;
+  --bg-hover: #1b1f26;
+  --border: #23272f;
+  --border-strong: #313742;
+  --text: #e6e8ec;
+  --text-muted: #9aa2ad;
+  --text-faint: #6b727d;
+
+  --accent: #7c9cff;
+  --accent-hover: #93abff;
+  --accent-fg: #0b0c0e;
+
+  --error: #ff6b6b;
+  --error-bg: #2a1618;
+  --warning: #f2c744;
+  --warning-bg: #2a2410;
+  --note: #62b6ff;
+  --note-bg: #10202e;
+  --success: #4ade80;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-bg: var(--bg);
+  --color-bg-panel: var(--bg-panel);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-hover: var(--bg-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-error: var(--error);
+  --color-warning: var(--warning);
+  --color-note: var(--note);
+  --color-success: var(--success);
   --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-jetbrains-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin, unobtrusive scrollbars for the panels. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #414855;
+  background-clip: content-box;
+}
+
+/* CodeMirror fills its container; keep the outer panel scroll-free. */
+.cm-editor {
+  height: 100%;
+}
+.cm-editor .cm-scroller {
+  font-family: var(--font-jetbrains-mono), ui-monospace, monospace;
+}
+.cm-editor.cm-focused {
+  outline: none;
 }

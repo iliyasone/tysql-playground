@@ -1,0 +1,5 @@
+# Resolved at Vercel build time: every deploy snapshots the latest tysql main
+# and the PEP 827 mypy fork. A deploy hook in the tysql repo re-triggers builds
+# on push, so the playground tracks tysql main automatically.
+tysql @ git+https://github.com/iliyasone/tysql.git@main
+mypy @ git+https://github.com/iliyasone/mypy-typemap.git@master

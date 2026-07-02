@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# tysql playground
 
-## Getting Started
+A web playground for [tysql](https://github.com/iliyasone/tysql) — write a SQL
+statement as a Python *type* and see it type-checked live by the
+[PEP 827 mypy fork](https://github.com/iliyasone/mypy-typemap). Snippets are
+**type-checked only, never executed**.
 
-First, run the development server:
+## How it works
+
+One Vercel project, two runtimes:
+
+- **Frontend** — Next.js (App Router) with a CodeMirror editor, example
+  presets, inline diagnostics, and shareable `#code=` links.
+- **Backend** — a single Python 3.14 serverless function,
+  [`api/check.py`](api/check.py), that runs the mypy fork in-process on the
+  posted snippet (the same check `tysql check` performs) and returns parsed
+  diagnostics as JSON.
+
+Dependencies in [`requirements.txt`](requirements.txt) point at **git heads**,
+so every deploy snapshots the latest `tysql@main` and the fork. A deploy hook
+(see below) rebuilds the playground on every push to tysql, keeping it current
+without pinning.
+
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+uv venv --python 3.14 .venv && uv pip install -p .venv -r requirements.txt
+
+.venv/bin/python api/check.py   # API on 127.0.0.1:5328
+npm run dev                     # UI on 127.0.0.1:3000 (proxies /api/* to 5328)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Deploying
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Push this repo to GitHub and import it into [Vercel](https://vercel.com/new)
+   — the Next.js preset, the Python function, `.python-version` (3.14) and
+   `vercel.json` (`maxDuration: 60`) are all picked up automatically.
+2. First build takes a few minutes (it builds the mypy fork from git).
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Track tysql `main` automatically
 
-## Learn More
+1. Vercel → project → **Settings → Git → Deploy Hooks** → create a hook
+   (e.g. `tysql-main`, branch `main`) and copy its URL.
+2. In the **tysql** repo on GitHub: **Settings → Secrets and variables →
+   Actions** → add secret `VERCEL_DEPLOY_HOOK_URL` with that URL.
+3. Commit `.github/workflows/redeploy-playground.yml` (already prepared in the
+   tysql repo) — every push to tysql `main` now redeploys the playground.
 
-To learn more about Next.js, take a look at the following resources:
+## Notes
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- The first check after an idle period is a cold start (~5–10 s: interpreter
+  boot + un-mypyc'd mypy check of the snippet's import graph). Warm checks take
+  ~300–500 ms; identical re-runs hit mypy's cache in ~20 ms.
+- mypy never executes the snippet, so the serverless function's own isolation
+  is sufficient sandboxing; input is capped at 64 KiB.
