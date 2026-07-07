@@ -27,6 +27,13 @@ const IMPORTS_TYSQL = /^\s*(from\s+tysql\b|import\s+tysql\b)/m;
 // mypy with the strict test-suite flags on the server.
 const LOOKS_LIKE_TESTS = /^(async\s+)?def\s+(mypy_)?test_\w+/m;
 
+// A `if __name__ == "__main__":` guard marks a runnable script — the primary
+// action then executes it in the browser alongside the type check, not just checks.
+const HAS_MAIN = /^if\s+__name__\s*==\s*(['"])__main__\1\s*:/m;
+
+// Persist the working snippet across reloads (survives close/refresh).
+const STORAGE_KEY = "tysql-playground:session";
+
 function readHashCode(): string | null {
   if (typeof window === "undefined") return null;
   const match = window.location.hash.match(/(?:^#|&)code=([^&]+)/);
@@ -43,6 +50,20 @@ const EXEC_BUTTON_LABEL = {
   install: "Installing…",
   run: "Running…",
 } as const;
+
+function PlayGlyph() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      width="10"
+      height="10"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M2.5 1.2a.5.5 0 0 1 .755-.43l7.2 4.37a.5.5 0 0 1 0 .855l-7.2 4.37a.5.5 0 0 1-.755-.43V1.2Z" />
+    </svg>
+  );
+}
 
 export default function Home() {
   // Deterministic first render (default example) → hash applied after mount,
@@ -76,16 +97,41 @@ export default function Home() {
     return () => window.clearTimeout(id);
   }, [code]);
 
-  // Apply a shared snippet from the URL hash, if present. Reading the hash is
-  // only possible after mount, so deriving state here is intentional.
+  // Restore prior state after mount (reading the hash / localStorage is only
+  // possible client-side, so deriving state here is intentional). A shared
+  // link wins; otherwise fall back to the last locally-saved session.
   useEffect(() => {
     const shared = readHashCode();
     if (shared !== null) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setCode(shared);
       setExampleId("");
+      return;
+    }
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as { code?: unknown; exampleId?: unknown };
+      if (typeof parsed.code === "string") {
+        setCode(parsed.code);
+        setExampleId(typeof parsed.exampleId === "string" ? parsed.exampleId : "");
+      }
+    } catch {
+      /* corrupt or unavailable storage → keep the default example */
     }
   }, []);
+
+  // Mirror the working snippet into localStorage so a refresh or reopen keeps it.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ code, exampleId }),
+      );
+    } catch {
+      /* storage full or blocked (private mode) → non-fatal, just don't persist */
+    }
+  }, [code, exampleId]);
 
   // Fetch versions once for the status bar.
   useEffect(() => {
@@ -137,11 +183,14 @@ export default function Home() {
     }
   }, []);
 
-  // Test snippets get one primary action that runs both suites at once.
+  // Test suites and runnable scripts (`__main__` guard) get one primary action
+  // that type-checks and executes at once; plain snippets only type-check.
   const testMode = LOOKS_LIKE_TESTS.test(code);
+  const runMode = !testMode && HAS_MAIN.test(code);
   const primaryAction = useCallback(() => {
     runCheck();
-    if (LOOKS_LIKE_TESTS.test(codeRef.current)) runSnippet();
+    const c = codeRef.current;
+    if (LOOKS_LIKE_TESTS.test(c) || HAS_MAIN.test(c)) runSnippet();
   }, [runCheck, runSnippet]);
 
   // Cmd/Ctrl+Enter checks from anywhere on the page; events originating inside
@@ -290,7 +339,7 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              {!testMode && (
+              {!testMode && !runMode && (
                 <button
                   type="button"
                   onClick={runSnippet}
@@ -305,15 +354,7 @@ export default function Home() {
                     </>
                   ) : (
                     <>
-                      <svg
-                        viewBox="0 0 12 12"
-                        width="10"
-                        height="10"
-                        fill="currentColor"
-                        aria-hidden="true"
-                      >
-                        <path d="M2.5 1.2a.5.5 0 0 1 .755-.43l7.2 4.37a.5.5 0 0 1 0 .855l-7.2 4.37a.5.5 0 0 1-.755-.43V1.2Z" />
-                      </svg>
+                      <PlayGlyph />
                       Run
                     </>
                   )}
@@ -322,19 +363,22 @@ export default function Home() {
               <button
                 type="button"
                 onClick={primaryAction}
-                disabled={checking || (testMode && execRunning)}
+                disabled={checking || ((testMode || runMode) && execRunning)}
                 className="flex min-w-[92px] items-center justify-center gap-2 rounded-md bg-accent px-3.5 py-1.5 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
                 title={
                   testMode
                     ? "Run both suites: pytest in your browser + mypy with the metatypes test flags (⌘/Ctrl + Enter)"
-                    : "Type-check with the mypy fork (⌘/Ctrl + Enter)"
+                    : runMode
+                      ? "Type-check with the mypy fork and run the script in your browser (⌘/Ctrl + Enter)"
+                      : "Type-check with the mypy fork (⌘/Ctrl + Enter)"
                 }
               >
-                {checking || (testMode && execRunning) ? (
+                {checking || ((testMode || runMode) && execRunning) ? (
                   <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent-fg/40 border-t-accent-fg" />
                 ) : (
                   <>
-                    {testMode ? "Test" : "Check"}
+                    {runMode && <PlayGlyph />}
+                    {testMode ? "Test" : runMode ? "Run" : "Check"}
                     <span className="font-normal opacity-70">⌘↵</span>
                   </>
                 )}
