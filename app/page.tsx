@@ -111,12 +111,6 @@ function writeSession(session: Session): void {
   }
 }
 
-const EXEC_BUTTON_LABEL = {
-  download: "Downloading…",
-  install: "Installing…",
-  run: "Running…",
-} as const;
-
 function PlayGlyph() {
   return (
     <svg
@@ -131,13 +125,67 @@ function PlayGlyph() {
   );
 }
 
+// One of the three tool buttons. "armed" (accent-blue) means the snippet
+// carries the construction this tool needs — a live preview of what
+// ⌘/Ctrl+Enter will run. Clicking runs just this tool.
+function ToolButton({
+  label,
+  title,
+  armed,
+  running,
+  disabled,
+  play,
+  onClick,
+}: {
+  label: string;
+  title: string;
+  armed: boolean;
+  running: boolean;
+  disabled: boolean;
+  play?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || running}
+      title={armed ? `${title} — runs on ⌘/Ctrl + Enter` : title}
+      aria-pressed={armed}
+      className={
+        "flex min-w-[74px] items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed " +
+        (armed
+          ? "bg-accent text-accent-fg hover:bg-accent-hover disabled:opacity-80"
+          : "border border-border bg-bg-elevated text-text-muted hover:border-border-strong hover:text-text disabled:opacity-45")
+      }
+    >
+      {running ? (
+        <span
+          className={
+            "h-3.5 w-3.5 animate-spin rounded-full border-2 " +
+            (armed
+              ? "border-accent-fg/40 border-t-accent-fg"
+              : "border-border-strong border-t-accent")
+          }
+        />
+      ) : (
+        play && <PlayGlyph />
+      )}
+      {label}
+    </button>
+  );
+}
+
 export default function Home() {
   // Deterministic first render (default example) → hash applied after mount,
   // so hydration never mismatches.
   const [code, setCode] = useState(DEFAULT_EXAMPLE.code);
   const [exampleId, setExampleId] = useState(DEFAULT_EXAMPLE.id);
-  const [run, setRun] = useState<RunState>({ status: "idle" });
-  const [exec, setExec] = useState<ExecState>({ status: "idle" });
+  // Three independent result blocks — mypy, pytest, runtime — since a snippet
+  // can carry all three kinds of fixture at once and each is run separately.
+  const [check, setCheck] = useState<RunState>({ status: "idle" });
+  const [pytest, setPytest] = useState<ExecState>({ status: "idle" });
+  const [runtime, setRuntime] = useState<ExecState>({ status: "idle" });
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const [versions, setVersions] = useState<Versions | null>(null);
   const [copied, setCopied] = useState(false);
@@ -201,62 +249,70 @@ export default function Home() {
     inFlight.current?.abort();
     const ac = new AbortController();
     inFlight.current = ac;
-    setRun({ status: "loading" });
+    setCheck({ status: "loading" });
     try {
       const result = await checkCode(codeRef.current, {
         test: LOOKS_LIKE_TESTS.test(codeRef.current),
         signal: ac.signal,
       });
       if (ac.signal.aborted) return;
-      setRun({ status: "done", result });
+      setCheck({ status: "done", result });
       setDiagnostics(result.diagnostics);
     } catch (err) {
       if (ac.signal.aborted) return;
       if (err instanceof DOMException && err.name === "AbortError") return;
       const message = err instanceof Error ? err.message : "Unexpected error.";
-      setRun({ status: "error", message });
+      setCheck({ status: "error", message });
     }
   }, []);
 
-  const execRunning = exec.status === "loading";
-  const runSnippet = useCallback(async (mode?: ExecMode) => {
-    const resolved =
-      mode ?? (HAS_PYTEST.test(codeRef.current) ? "pytest" : "exec");
-    setExec({ status: "loading", stage: "run" });
-    try {
-      const result = await runPython(
-        codeRef.current,
-        (stage) => setExec({ status: "loading", stage }),
-        resolved,
-      );
-      setExec({ status: "done", result });
-    } catch (err) {
-      const message =
-        err instanceof PyRunError ? err.message : "Unexpected error.";
-      setExec({ status: "error", message });
-    }
-  }, []);
+  // pytest and runtime share the single Pyodide worker; both go through this.
+  const runExec = useCallback(
+    async (mode: ExecMode, setState: (s: ExecState) => void) => {
+      setState({ status: "loading", stage: "run" });
+      try {
+        const result = await runPython(
+          codeRef.current,
+          (stage) => setState({ status: "loading", stage }),
+          mode,
+        );
+        setState({ status: "done", result });
+      } catch (err) {
+        const message =
+          err instanceof PyRunError ? err.message : "Unexpected error.";
+        setState({ status: "error", message });
+      }
+    },
+    [],
+  );
+  const runPytest = useCallback(
+    () => runExec("pytest", setPytest),
+    [runExec],
+  );
+  const runRuntime = useCallback(
+    () => runExec("exec", setRuntime),
+    [runExec],
+  );
 
-  // The three composable blocks, derived from the current snippet. mypy also
-  // covers test suites (strict flags) and is the fallback when nothing else is
-  // detected, so ⌘/Ctrl+Enter always does something sensible.
-  const pytestActive = HAS_PYTEST.test(code);
-  const runtimeActive = HAS_MAIN.test(code);
-  const mypyActive =
-    HAS_MYPY_FIXTURES.test(code) || LOOKS_LIKE_TESTS.test(code) || !runtimeActive;
+  // Which of the three blocks the snippet opts into. mypy also covers test
+  // suites (strict flags); when nothing at all is detected it's the fallback,
+  // so ⌘/Ctrl+Enter always does something sensible.
+  const pytestDetected = HAS_PYTEST.test(code);
+  const runtimeDetected = HAS_MAIN.test(code);
+  const mypyDetected = HAS_MYPY_FIXTURES.test(code) || LOOKS_LIKE_TESTS.test(code);
 
-  const primaryAction = useCallback(() => {
+  // ⌘/Ctrl+Enter: run every tool the snippet calls for. The two browser
+  // executions are sequenced because Pyodide is single-threaded; mypy runs on
+  // the server in parallel.
+  const runDetected = useCallback(async () => {
     const c = codeRef.current;
-    const pytest = HAS_PYTEST.test(c);
-    const runtime = HAS_MAIN.test(c);
-    const mypy =
-      HAS_MYPY_FIXTURES.test(c) || LOOKS_LIKE_TESTS.test(c) || !runtime;
-    if (mypy) runCheck();
-    // pytest and a plain script share the single Pyodide runner; a test suite
-    // takes precedence when both markers happen to be present.
-    if (pytest) runSnippet("pytest");
-    else if (runtime) runSnippet("exec");
-  }, [runCheck, runSnippet]);
+    const pt = HAS_PYTEST.test(c);
+    const rt = HAS_MAIN.test(c);
+    const mypy = HAS_MYPY_FIXTURES.test(c) || LOOKS_LIKE_TESTS.test(c);
+    if (mypy || (!pt && !rt)) runCheck();
+    if (pt) await runPytest();
+    if (rt) await runRuntime();
+  }, [runCheck, runPytest, runRuntime]);
 
   // Cmd/Ctrl+Enter and Cmd/Ctrl+S both run the primary action from anywhere on
   // the page. Events originating inside the editor are handled by the
@@ -272,11 +328,11 @@ export default function Home() {
         return;
       }
       event.preventDefault();
-      primaryAction();
+      runDetected();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [primaryAction]);
+  }, [runDetected]);
 
   const handleSelectExample = useCallback((id: string) => {
     const ex = EXAMPLES.find((e) => e.id === id);
@@ -284,8 +340,9 @@ export default function Home() {
     setExampleId(id);
     setCode(ex.code);
     setDiagnostics([]);
-    setRun({ status: "idle" });
-    setExec({ status: "idle" });
+    setCheck({ status: "idle" });
+    setPytest({ status: "idle" });
+    setRuntime({ status: "idle" });
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", window.location.pathname);
     }
@@ -343,30 +400,9 @@ export default function Home() {
     editorRef.current?.focusLine(line, col);
   }, []);
 
-  const checking = run.status === "loading";
-
-  // A manual Run stays available only when the primary action doesn't already
-  // execute the snippet (i.e. no pytest/runtime block), so plain or mypy-only
-  // snippets can still be run in the browser on demand.
-  const showManualRun = !pytestActive && !runtimeActive;
-  const primaryBusy =
-    (mypyActive && checking) ||
-    ((pytestActive || runtimeActive) && execRunning);
-  const primaryPlay = runtimeActive && !pytestActive;
-  const primaryLabel = pytestActive
-    ? "Test"
-    : runtimeActive
-      ? mypyActive
-        ? "Check & Run"
-        : "Run"
-      : "Check";
-  const primaryTitle = pytestActive
-    ? "Run both suites: pytest in your browser + mypy with the metatypes test flags (⌘/Ctrl + Enter)"
-    : runtimeActive
-      ? mypyActive
-        ? "Type-check with the mypy fork and run the script in your browser (⌘/Ctrl + Enter)"
-        : "Run the script with Python 3.14 in your browser (⌘/Ctrl + Enter)"
-      : "Type-check with the mypy fork (⌘/Ctrl + Enter)";
+  const checking = check.status === "loading";
+  const pytestRunning = pytest.status === "loading";
+  const runtimeRunning = runtime.status === "loading";
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -432,44 +468,47 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              {showManualRun && (
-                <button
-                  type="button"
-                  onClick={() => runSnippet()}
-                  disabled={execRunning}
-                  title="Runs in your browser — downloads a ~20 MB Python runtime on first use"
-                  className="flex items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-70"
+              <div className="flex items-center gap-1.5">
+                <ToolButton
+                  label="Check"
+                  title="Type-check with the PEP 827 mypy fork"
+                  armed={mypyDetected}
+                  running={checking}
+                  disabled={false}
+                  onClick={runCheck}
+                />
+                <ToolButton
+                  label="Test"
+                  title={
+                    pytestDetected
+                      ? "Run the test_* functions with pytest in your browser"
+                      : "Add a test_* function to enable pytest"
+                  }
+                  armed={pytestDetected}
+                  running={pytestRunning}
+                  disabled={!pytestDetected}
+                  onClick={runPytest}
+                />
+                <ToolButton
+                  label="Run"
+                  title={
+                    runtimeDetected
+                      ? "Run the script with Python 3.14 in your browser"
+                      : "Execute the snippet with Python 3.14 in your browser"
+                  }
+                  armed={runtimeDetected}
+                  running={runtimeRunning}
+                  disabled={false}
+                  play
+                  onClick={runRuntime}
+                />
+                <span
+                  title="Enter runs every highlighted tool"
+                  className="ml-0.5 select-none rounded border border-border bg-bg-elevated px-1.5 py-1 font-mono text-[11px] text-text-faint"
                 >
-                  {execRunning ? (
-                    <>
-                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
-                      {EXEC_BUTTON_LABEL[exec.stage]}
-                    </>
-                  ) : (
-                    <>
-                      <PlayGlyph />
-                      Run
-                    </>
-                  )}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={primaryAction}
-                disabled={primaryBusy}
-                className="flex min-w-[92px] items-center justify-center gap-2 rounded-md bg-accent px-3.5 py-1.5 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
-                title={primaryTitle}
-              >
-                {primaryBusy ? (
-                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent-fg/40 border-t-accent-fg" />
-                ) : (
-                  <>
-                    {primaryPlay && <PlayGlyph />}
-                    {primaryLabel}
-                    <span className="font-normal opacity-70">⌘↵</span>
-                  </>
-                )}
-              </button>
+                  ⌘↵
+                </span>
+              </div>
             </div>
           </div>
 
@@ -480,7 +519,7 @@ export default function Home() {
                 value={code}
                 onChange={setCode}
                 diagnostics={diagnostics}
-                onRun={primaryAction}
+                onRun={runDetected}
                 theme={theme}
               />
             )}
@@ -490,13 +529,14 @@ export default function Home() {
         {/* Results pane */}
         <section className="flex min-h-0 flex-col bg-bg-panel">
           <ResultsPanel
-            run={run}
-            exec={exec}
+            check={check}
+            pytest={pytest}
+            runtime={runtime}
             mode={mode}
             versions={versions}
-            mypyActive={mypyActive}
-            pytestActive={pytestActive}
-            runtimeActive={runtimeActive}
+            mypyDetected={mypyDetected}
+            pytestDetected={pytestDetected}
+            runtimeDetected={runtimeDetected}
             onSelectDiagnostic={handleSelectDiagnostic}
           />
         </section>

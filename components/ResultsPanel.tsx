@@ -18,15 +18,17 @@ export type ExecState =
   | { status: "error"; message: string };
 
 interface ResultsPanelProps {
-  run: RunState;
-  exec: ExecState;
+  /** The three independent result blocks, in display order. */
+  check: RunState;
+  pytest: ExecState;
+  runtime: ExecState;
   mode: PlaygroundMode;
   /** Tool versions from the server's Check (git main), for block headers. */
   versions: Versions | null;
   /** Which of the three blocks the current snippet opts into. */
-  mypyActive: boolean;
-  pytestActive: boolean;
-  runtimeActive: boolean;
+  mypyDetected: boolean;
+  pytestDetected: boolean;
+  runtimeDetected: boolean;
   onSelectDiagnostic: (line: number, col: number) => void;
 }
 
@@ -115,23 +117,54 @@ function DiagnosticRow({
   );
 }
 
-function SectionHeader({
+function Chevron({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      width="9"
+      height="9"
+      fill="currentColor"
+      aria-hidden="true"
+      className={`shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
+    >
+      <path d="M2 4h8L6 9z" />
+    </svg>
+  );
+}
+
+/** A collapsible result block: a title (toggles), a qualifier that may hold
+ * links, optional right-aligned controls, and a body hidden when collapsed. */
+function Block({
   title,
   qualifier,
   right,
+  children,
 }: {
   title: string;
   qualifier: React.ReactNode;
   right?: React.ReactNode;
+  children: React.ReactNode;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
   return (
-    <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-bg-panel px-4 py-1.5">
-      <span className="text-xs font-medium text-text">
-        {title}
-        <span className="font-normal text-text-faint"> · {qualifier}</span>
-      </span>
-      {right}
-    </div>
+    <section>
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-bg-panel px-4 py-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            aria-expanded={!collapsed}
+            className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-text transition-colors hover:text-accent"
+          >
+            <Chevron collapsed={collapsed} />
+            {title}
+          </button>
+          <span className="truncate text-xs text-text-faint">· {qualifier}</span>
+        </div>
+        {!collapsed && right}
+      </div>
+      {!collapsed && children}
+    </section>
   );
 }
 
@@ -162,12 +195,12 @@ const EXEC_STAGE_LABEL: Record<ExecStage, string> = {
 };
 
 function CheckSection({
-  run,
+  check,
   strict,
   versions,
   onSelectDiagnostic,
 }: {
-  run: RunState;
+  check: RunState;
   /** Test suite → strict flags (ignores act as negative assertions). */
   strict: boolean;
   versions: Versions | null;
@@ -185,107 +218,92 @@ function CheckSection({
     </>
   );
 
-  if (run.status === "loading") {
-    return (
-      <section>
-        <SectionHeader title="Type check" qualifier={qualifier} />
-        <CheckLoading />
-      </section>
-    );
-  }
-  if (run.status === "error") {
-    return (
-      <section>
-        <SectionHeader title="Type check" qualifier={qualifier} />
-        <div className="px-4 py-4">
-          <p className="text-sm font-medium text-error">Server error</p>
-          <p className="mt-1 text-xs text-text-muted">{run.message}</p>
-        </div>
-      </section>
-    );
-  }
-  if (run.status === "idle") {
-    return (
-      <section>
-        <SectionHeader title="Type check" qualifier={qualifier} />
-        <p className="px-4 py-4 text-xs text-text-faint">
-          {strict
-            ? "Type-checks the suite →"
-            : "Type-checks the snippet →"}
-        </p>
-      </section>
-    );
-  }
+  let right: React.ReactNode = null;
+  let body: React.ReactNode;
 
-  const { diagnostics, exit_code, duration_ms, stdout, stderr } = run.result;
-  const errorCount = diagnostics.filter((d) => d.severity === "error").length;
-  const clean = exit_code === 0;
-  // Exit codes other than 0/1 (or a non-zero exit with nothing parsed) mean the
-  // checker itself failed — never dress that up as a result.
-  const crashed =
-    (exit_code !== 0 && exit_code !== 1) || (!clean && diagnostics.length === 0);
+  if (check.status === "loading") {
+    body = <CheckLoading />;
+  } else if (check.status === "error") {
+    body = (
+      <div className="px-4 py-4">
+        <p className="text-sm font-medium text-error">Server error</p>
+        <p className="mt-1 text-xs text-text-muted">{check.message}</p>
+      </div>
+    );
+  } else if (check.status === "idle") {
+    body = (
+      <p className="px-4 py-4 text-xs text-text-faint">
+        {strict ? "Type-checks the suite →" : "Type-checks the snippet →"}
+      </p>
+    );
+  } else {
+    const { diagnostics, exit_code, duration_ms, stdout, stderr } = check.result;
+    const errorCount = diagnostics.filter((d) => d.severity === "error").length;
+    const clean = exit_code === 0;
+    // Exit codes other than 0/1 (or a non-zero exit with nothing parsed) mean
+    // the checker itself failed — never dress that up as a result.
+    const crashed =
+      (exit_code !== 0 && exit_code !== 1) ||
+      (!clean && diagnostics.length === 0);
+    right = (
+      <span className="flex items-center gap-2">
+        <span className="text-xs text-text-muted tabular-nums">
+          {formatDuration(duration_ms)}
+        </span>
+        <button
+          type="button"
+          onClick={() => setRaw((v) => !v)}
+          className="rounded-md border border-border px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
+        >
+          {raw ? "Diagnostics" : "Raw output"}
+        </button>
+      </span>
+    );
+    body = crashed ? (
+      <div className="p-4">
+        <p className="mb-2 text-xs text-text-muted">
+          The type checker did not produce a result (exit code {exit_code}) —
+          this is a playground problem, not an error in your snippet. Raw output:
+        </p>
+        <pre className="whitespace-pre-wrap break-words rounded-md border border-error/30 bg-error/5 p-3 font-mono text-xs leading-relaxed text-text">
+          {stdout || "(stdout empty)"}
+          {stderr ? `\n\n--- stderr ---\n${stderr}` : "\n\n(stderr empty)"}
+        </pre>
+      </div>
+    ) : raw ? (
+      <pre className="whitespace-pre-wrap break-words p-4 font-mono text-xs leading-relaxed text-text-muted">
+        {stdout || "(stdout empty)"}
+        {stderr ? `\n\n--- stderr ---\n${stderr}` : ""}
+      </pre>
+    ) : diagnostics.length === 0 ? (
+      <div className="flex items-center gap-2 px-4 py-4">
+        <span className="flex h-6 w-6 items-center justify-center rounded-full border border-success/40 bg-success/10 text-xs text-success">
+          ✓
+        </span>
+        <p className="text-sm text-text">The snippet type-checks cleanly.</p>
+      </div>
+    ) : (
+      <div>
+        <p className="border-b border-border/60 px-4 py-2 text-xs font-medium text-text-muted">
+          {errorCount === 0
+            ? "No errors"
+            : `${errorCount} ${errorCount === 1 ? "error" : "errors"}`}
+        </p>
+        {diagnostics.map((d, i) => (
+          <DiagnosticRow
+            key={`${d.line}:${d.col}:${i}`}
+            diag={d}
+            onSelect={onSelectDiagnostic}
+          />
+        ))}
+      </div>
+    );
+  }
 
   return (
-    <section>
-      <SectionHeader
-        title="Type check"
-        qualifier={qualifier}
-        right={
-          <span className="flex items-center gap-2">
-            <span className="text-xs text-text-muted tabular-nums">
-              {formatDuration(duration_ms)}
-            </span>
-            <button
-              type="button"
-              onClick={() => setRaw((v) => !v)}
-              className="rounded-md border border-border px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
-            >
-              {raw ? "Diagnostics" : "Raw output"}
-            </button>
-          </span>
-        }
-      />
-      {crashed ? (
-        <div className="p-4">
-          <p className="mb-2 text-xs text-text-muted">
-            The type checker did not produce a result (exit code {exit_code}) —
-            this is a playground problem, not an error in your snippet. Raw
-            output:
-          </p>
-          <pre className="whitespace-pre-wrap break-words rounded-md border border-error/30 bg-error/5 p-3 font-mono text-xs leading-relaxed text-text">
-            {stdout || "(stdout empty)"}
-            {stderr ? `\n\n--- stderr ---\n${stderr}` : "\n\n(stderr empty)"}
-          </pre>
-        </div>
-      ) : raw ? (
-        <pre className="whitespace-pre-wrap break-words p-4 font-mono text-xs leading-relaxed text-text-muted">
-          {stdout || "(stdout empty)"}
-          {stderr ? `\n\n--- stderr ---\n${stderr}` : ""}
-        </pre>
-      ) : diagnostics.length === 0 ? (
-        <div className="flex items-center gap-2 px-4 py-4">
-          <span className="flex h-6 w-6 items-center justify-center rounded-full border border-success/40 bg-success/10 text-xs text-success">
-            ✓
-          </span>
-          <p className="text-sm text-text">The snippet type-checks cleanly.</p>
-        </div>
-      ) : (
-        <div>
-          <p className="border-b border-border/60 px-4 py-2 text-xs font-medium text-text-muted">
-            {errorCount === 0
-              ? "No errors"
-              : `${errorCount} ${errorCount === 1 ? "error" : "errors"}`}
-          </p>
-          {diagnostics.map((d, i) => (
-            <DiagnosticRow
-              key={`${d.line}:${d.col}:${i}`}
-              diag={d}
-              onSelect={onSelectDiagnostic}
-            />
-          ))}
-        </div>
-      )}
-    </section>
+    <Block title="Type check" qualifier={qualifier} right={right}>
+      {body}
+    </Block>
   );
 }
 
@@ -313,59 +331,54 @@ function runtimeQualifier(
   );
 }
 
-function ExecSection({ exec, pytest }: { exec: ExecState; pytest: boolean }) {
+function ExecSection({
+  title,
+  exec,
+  pytest,
+}: {
+  title: string;
+  exec: ExecState;
+  pytest: boolean;
+}) {
   // Prefer the run's own verdict for labelling once it exists.
   const isPytest =
     exec.status === "done" ? exec.result.pytestExit !== null : pytest;
   const runtimeVersions = exec.status === "done" ? exec.result.versions : null;
   const qualifier = runtimeQualifier(isPytest, runtimeVersions);
-  if (exec.status === "idle") {
-    return (
-      <section>
-        <SectionHeader title="Runtime" qualifier={qualifier} />
-        <p className="px-4 py-4 text-xs text-text-faint">
-          {pytest
-            ? "Runs the suite with pytest →"
-            : "Run to compare against the runtime behaviour →"}
-        </p>
-      </section>
-    );
-  }
-  if (exec.status === "loading") {
-    return (
-      <section>
-        <SectionHeader title="Runtime" qualifier={qualifier} />
-        <div className="flex items-center gap-3 px-4 py-4">
-          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
-          <p className="text-xs text-text-muted">{EXEC_STAGE_LABEL[exec.stage]}</p>
-        </div>
-      </section>
-    );
-  }
-  if (exec.status === "error") {
-    return (
-      <section>
-        <SectionHeader title="Runtime" qualifier={qualifier} />
-        <div className="px-4 py-4">
-          <p className="text-sm font-medium text-error">Runtime unavailable</p>
-          <p className="mt-1 text-xs text-text-muted">{exec.message}</p>
-        </div>
-      </section>
-    );
-  }
 
-  const { output, error, durationMs } = exec.result;
-  return (
-    <section>
-      <SectionHeader
-        title="Runtime"
-        qualifier={qualifier}
-        right={
-          <span className="text-xs text-text-muted tabular-nums">
-            {formatDuration(durationMs)}
-          </span>
-        }
-      />
+  let right: React.ReactNode = null;
+  let body: React.ReactNode;
+
+  if (exec.status === "idle") {
+    body = (
+      <p className="px-4 py-4 text-xs text-text-faint">
+        {pytest
+          ? "Runs the test_* functions with pytest →"
+          : "Runs the snippet with Python 3.14 →"}
+      </p>
+    );
+  } else if (exec.status === "loading") {
+    body = (
+      <div className="flex items-center gap-3 px-4 py-4">
+        <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
+        <p className="text-xs text-text-muted">{EXEC_STAGE_LABEL[exec.stage]}</p>
+      </div>
+    );
+  } else if (exec.status === "error") {
+    body = (
+      <div className="px-4 py-4">
+        <p className="text-sm font-medium text-error">Runtime unavailable</p>
+        <p className="mt-1 text-xs text-text-muted">{exec.message}</p>
+      </div>
+    );
+  } else {
+    const { output, error, durationMs } = exec.result;
+    right = (
+      <span className="text-xs text-text-muted tabular-nums">
+        {formatDuration(durationMs)}
+      </span>
+    );
+    body = (
       <div className="px-4 py-3">
         {output ? (
           <pre className="whitespace-pre-wrap break-words font-mono text-[13px] leading-relaxed text-text">
@@ -380,7 +393,13 @@ function ExecSection({ exec, pytest }: { exec: ExecState; pytest: boolean }) {
           </pre>
         )}
       </div>
-    </section>
+    );
+  }
+
+  return (
+    <Block title={title} qualifier={qualifier} right={right}>
+      {body}
+    </Block>
   );
 }
 
@@ -454,48 +473,64 @@ function IdleExplainer({ mode }: { mode: PlaygroundMode }) {
         <kbd className="rounded border border-border-strong bg-bg-elevated px-1.5 py-0.5 font-mono text-[11px] text-text">
           ⌘↵
         </kbd>{" "}
-        runs Check.
+        runs the highlighted tools.
       </p>
     </div>
   );
 }
 
 export default function ResultsPanel({
-  run,
-  exec,
+  check,
+  pytest,
+  runtime,
   mode,
   versions,
-  mypyActive,
-  pytestActive,
-  runtimeActive,
+  mypyDetected,
+  pytestDetected,
+  runtimeDetected,
   onSelectDiagnostic,
 }: ResultsPanelProps) {
-  if (run.status === "idle" && exec.status === "idle") {
+  const allIdle =
+    check.status === "idle" &&
+    pytest.status === "idle" &&
+    runtime.status === "idle";
+  if (allIdle) {
     return <IdleExplainer mode={mode} />;
   }
 
-  // Show only the blocks the snippet opts into (or that already have a result).
-  const showCheck = mypyActive || run.status !== "idle";
-  const showExec = pytestActive || runtimeActive || exec.status !== "idle";
-  const bothDone = run.status === "done" && exec.status === "done";
+  // Show a block if the snippet opts into it or it already carries a result.
+  const showCheck = mypyDetected || check.status !== "idle";
+  const showPytest = pytestDetected || pytest.status !== "idle";
+  const showRuntime = runtimeDetected || runtime.status !== "idle";
+
+  // Agreement compares the static check against the browser run — pytest is the
+  // meaningful pairing when present, otherwise the plain runtime.
+  const agreementExec =
+    pytest.status === "done"
+      ? pytest.result
+      : runtime.status === "done"
+        ? runtime.result
+        : null;
+
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
         {showCheck && (
           <CheckSection
-            run={run}
-            strict={pytestActive}
+            check={check}
+            strict={pytestDetected}
             versions={versions}
             onSelectDiagnostic={onSelectDiagnostic}
           />
         )}
-        {showExec && <ExecSection exec={exec} pytest={pytestActive} />}
-      </div>
-      {bothDone && showCheck && showExec &&
-        run.status === "done" &&
-        exec.status === "done" && (
-          <AgreementStrip check={run.result} exec={exec.result} />
+        {showPytest && <ExecSection title="Tests" exec={pytest} pytest />}
+        {showRuntime && (
+          <ExecSection title="Runtime" exec={runtime} pytest={false} />
         )}
+      </div>
+      {check.status === "done" && agreementExec && (
+        <AgreementStrip check={check.result} exec={agreementExec} />
+      )}
     </div>
   );
 }
