@@ -1,24 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   compressToEncodedURIComponent,
   decompressFromEncodedURIComponent,
 } from "lz-string";
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, type Example } from "@/lib/examples";
-import {
-  checkCode,
-  getHealth,
-  type Diagnostic,
-  type Versions,
-} from "@/lib/api";
-import Header from "@/components/Header";
+import { checkCode, getHealth, type Diagnostic, type Versions } from "@/lib/api";
+import { runPython, PyRunError } from "@/lib/pyRunner";
+import { useTheme } from "@/lib/theme";
+import Header, { type PlaygroundMode } from "@/components/Header";
 import Editor, { type EditorHandle } from "@/components/Editor";
-import ResultsPanel, { type RunState } from "@/components/ResultsPanel";
+import ResultsPanel, {
+  type ExecState,
+  type RunState,
+} from "@/components/ResultsPanel";
 import StatusBar from "@/components/StatusBar";
 
 const DEFAULT_EXAMPLE: Example =
   EXAMPLES.find((e) => e.id === DEFAULT_EXAMPLE_ID) ?? EXAMPLES[0];
+
+const IMPORTS_TYSQL = /^\s*(from\s+tysql\b|import\s+tysql\b)/m;
 
 function readHashCode(): string | null {
   if (typeof window === "undefined") return null;
@@ -31,29 +33,41 @@ function readHashCode(): string | null {
   }
 }
 
+const EXEC_BUTTON_LABEL = {
+  download: "Downloading…",
+  install: "Installing…",
+  run: "Running…",
+} as const;
+
 export default function Home() {
   // Deterministic first render (default example) → hash applied after mount,
   // so hydration never mismatches.
   const [code, setCode] = useState(DEFAULT_EXAMPLE.code);
   const [exampleId, setExampleId] = useState(DEFAULT_EXAMPLE.id);
   const [run, setRun] = useState<RunState>({ status: "idle" });
+  const [exec, setExec] = useState<ExecState>({ status: "idle" });
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const [versions, setVersions] = useState<Versions | null>(null);
-  const [elapsed, setElapsed] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [mode, setMode] = useState<PlaygroundMode>("tysql");
+  const [theme, toggleTheme] = useTheme();
 
   const editorRef = useRef<EditorHandle>(null);
   const inFlight = useRef<AbortController | null>(null);
-  // Latest code, read inside the (stable) run handler without re-creating it.
+  // Latest code, read inside the (stable) run handlers without re-creating them.
   const codeRef = useRef(code);
   useEffect(() => {
     codeRef.current = code;
   }, [code]);
 
-  const selectedExample = useMemo(
-    () => EXAMPLES.find((e) => e.id === exampleId),
-    [exampleId],
-  );
+  // tysql ↔ PEP 827 morph, debounced so the title doesn't flicker mid-keystroke.
+  useEffect(() => {
+    const id = window.setTimeout(
+      () => setMode(IMPORTS_TYSQL.test(code) ? "tysql" : "pep827"),
+      400,
+    );
+    return () => window.clearTimeout(id);
+  }, [code]);
 
   // Apply a shared snippet from the URL hash, if present. Reading the hash is
   // only possible after mount, so deriving state here is intentional.
@@ -77,19 +91,10 @@ export default function Home() {
     return () => ac.abort();
   }, []);
 
-  // Elapsed timer while a check is in flight (reset happens in runCheck).
-  useEffect(() => {
-    if (run.status !== "loading") return;
-    const started = Date.now();
-    const id = window.setInterval(() => setElapsed(Date.now() - started), 100);
-    return () => window.clearInterval(id);
-  }, [run.status]);
-
   const runCheck = useCallback(async () => {
     inFlight.current?.abort();
     const ac = new AbortController();
     inFlight.current = ac;
-    setElapsed(0);
     setRun({ status: "loading" });
     try {
       const result = await checkCode(codeRef.current, ac.signal);
@@ -104,7 +109,22 @@ export default function Home() {
     }
   }, []);
 
-  // Cmd/Ctrl+Enter runs from anywhere on the page; events originating inside
+  const execRunning = exec.status === "loading";
+  const runSnippet = useCallback(async () => {
+    setExec({ status: "loading", stage: "run" });
+    try {
+      const result = await runPython(codeRef.current, (stage) =>
+        setExec({ status: "loading", stage }),
+      );
+      setExec({ status: "done", result });
+    } catch (err) {
+      const message =
+        err instanceof PyRunError ? err.message : "Unexpected error.";
+      setExec({ status: "error", message });
+    }
+  }, []);
+
+  // Cmd/Ctrl+Enter checks from anywhere on the page; events originating inside
   // the editor are skipped — the CodeMirror keymap handles those, and skipping
   // avoids double runs.
   useEffect(() => {
@@ -126,6 +146,7 @@ export default function Home() {
     setCode(ex.code);
     setDiagnostics([]);
     setRun({ status: "idle" });
+    setExec({ status: "idle" });
     if (typeof window !== "undefined") {
       window.history.replaceState(null, "", window.location.pathname);
     }
@@ -148,13 +169,11 @@ export default function Home() {
     editorRef.current?.focusLine(line, col);
   }, []);
 
-  const loading = run.status === "loading";
-  const elapsedLabel =
-    elapsed >= 1000 ? `${(elapsed / 1000).toFixed(1)}s` : `${elapsed}ms`;
+  const checking = run.status === "loading";
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <Header />
+      <Header mode={mode} theme={theme} onToggleTheme={toggleTheme} />
 
       <div className="grid min-h-0 flex-1 grid-rows-2 md:grid-cols-[minmax(0,1fr)_minmax(0,0.82fr)] md:grid-rows-1">
         {/* Editor pane */}
@@ -167,7 +186,7 @@ export default function Home() {
               id="example-select"
               value={exampleId}
               onChange={(e) => handleSelectExample(e.target.value)}
-              className="max-w-[52%] truncate rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-xs text-text outline-none transition-colors hover:border-border-strong focus:border-accent"
+              className="max-w-[40%] truncate rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-xs text-text outline-none transition-colors hover:border-border-strong focus:border-accent"
             >
               {exampleId === "" && (
                 <option value="" disabled>
@@ -185,36 +204,54 @@ export default function Home() {
               <button
                 type="button"
                 onClick={handleShare}
-                className="rounded-md border border-border bg-bg-elevated px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text"
+                className="rounded-md px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
               >
                 {copied ? "Copied ✓" : "Share"}
               </button>
               <button
                 type="button"
-                onClick={runCheck}
-                disabled={loading}
-                className="flex min-w-[104px] items-center justify-center gap-2 rounded-md bg-accent px-3.5 py-1.5 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
-                title="Run type-check (⌘/Ctrl + Enter)"
+                onClick={runSnippet}
+                disabled={execRunning}
+                title="Runs in your browser — downloads a ~20 MB Python runtime on first use"
+                className="flex items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {loading ? (
+                {execRunning ? (
                   <>
-                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent-fg/40 border-t-accent-fg" />
-                    <span className="tabular-nums">{elapsedLabel}</span>
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
+                    {EXEC_BUTTON_LABEL[exec.stage]}
                   </>
                 ) : (
                   <>
+                    <svg
+                      viewBox="0 0 12 12"
+                      width="10"
+                      height="10"
+                      fill="currentColor"
+                      aria-hidden="true"
+                    >
+                      <path d="M2.5 1.2a.5.5 0 0 1 .755-.43l7.2 4.37a.5.5 0 0 1 0 .855l-7.2 4.37a.5.5 0 0 1-.755-.43V1.2Z" />
+                    </svg>
                     Run
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={runCheck}
+                disabled={checking}
+                className="flex min-w-[92px] items-center justify-center gap-2 rounded-md bg-accent px-3.5 py-1.5 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
+                title="Type-check with the mypy fork (⌘/Ctrl + Enter)"
+              >
+                {checking ? (
+                  <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent-fg/40 border-t-accent-fg" />
+                ) : (
+                  <>
+                    Check
                     <span className="font-normal opacity-70">⌘↵</span>
                   </>
                 )}
               </button>
             </div>
-
-            {selectedExample && (
-              <p className="w-full text-[11px] leading-snug text-text-faint">
-                {selectedExample.blurb}
-              </p>
-            )}
           </div>
 
           <div className="min-h-0 flex-1 overflow-hidden bg-bg">
@@ -224,17 +261,23 @@ export default function Home() {
               onChange={setCode}
               diagnostics={diagnostics}
               onRun={runCheck}
+              theme={theme}
             />
           </div>
         </section>
 
         {/* Results pane */}
         <section className="flex min-h-0 flex-col bg-bg-panel">
-          <ResultsPanel run={run} onSelectDiagnostic={handleSelectDiagnostic} />
+          <ResultsPanel
+            run={run}
+            exec={exec}
+            mode={mode}
+            onSelectDiagnostic={handleSelectDiagnostic}
+          />
         </section>
       </div>
 
-      <StatusBar versions={versions} run={run} />
+      <StatusBar versions={versions} />
     </div>
   );
 }

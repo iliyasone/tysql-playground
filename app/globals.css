@@ -1,7 +1,11 @@
 @import "tailwindcss";
 
-/* Dark-first, technical palette. Near-black, one restrained accent. */
-:root {
+/* Dark-first, technical palette. Near-black, one restrained accent.
+   The inline script in layout.tsx sets data-theme on <html> before paint
+   (localStorage override, else prefers-color-scheme), so :root is only the
+   no-JS fallback — kept in sync with [data-theme="dark"]. */
+:root,
+[data-theme="dark"] {
   --bg: #0b0c0e;
   --bg-panel: #101216;
   --bg-elevated: #15181d;
@@ -23,6 +27,60 @@
   --note: #62b6ff;
   --note-bg: #10202e;
   --success: #4ade80;
+}
+
+/* Light counterpart: same periwinkle hue family, cool-gray neutrals; the
+   editor canvas is the brightest surface and the chrome recedes. Status hues
+   darkened for legibility on white. */
+[data-theme="light"] {
+  --bg: #fbfcfd;
+  --bg-panel: #f1f3f6;
+  --bg-elevated: #ffffff;
+  --bg-hover: #e8ecf1;
+  --border: #e3e7ed;
+  --border-strong: #ccd2db;
+  --text: #1a1d22;
+  --text-muted: #5b636e;
+  --text-faint: #8b929d;
+
+  --accent: #4c63d2;
+  --accent-hover: #3f55c4;
+  --accent-fg: #ffffff;
+
+  --error: #d92d20;
+  --error-bg: #fdecea;
+  --warning: #b7791f;
+  --warning-bg: #fbf3df;
+  --note: #1d6fd6;
+  --note-bg: #e8f1fc;
+  --success: #16a34a;
+}
+
+/* No-JS fallback only — with JS the inline script always sets data-theme. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #fbfcfd;
+    --bg-panel: #f1f3f6;
+    --bg-elevated: #ffffff;
+    --bg-hover: #e8ecf1;
+    --border: #e3e7ed;
+    --border-strong: #ccd2db;
+    --text: #1a1d22;
+    --text-muted: #5b636e;
+    --text-faint: #8b929d;
+
+    --accent: #4c63d2;
+    --accent-hover: #3f55c4;
+    --accent-fg: #ffffff;
+
+    --error: #d92d20;
+    --error-bg: #fdecea;
+    --warning: #b7791f;
+    --warning-bg: #fbf3df;
+    --note: #1d6fd6;
+    --note-bg: #e8f1fc;
+    --success: #16a34a;
+  }
 }
 
 @theme inline {
@@ -58,6 +116,20 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Crossfade for the header title's first word on tysql ↔ PEP 827 morphs. */
+@keyframes title-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.title-word {
+  display: inline-block;
+  animation: title-fade-in 150ms ease-out;
+}
+
 /* Thin, unobtrusive scrollbars for the panels. */
 * {
   scrollbar-width: thin;
@@ -74,7 +146,7 @@ body {
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #414855;
+  background: var(--text-faint);
   background-clip: content-box;
 }
 

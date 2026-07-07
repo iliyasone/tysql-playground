@@ -2,19 +2,29 @@
 
 A web playground for [tysql](https://github.com/iliyasone/tysql) — write a SQL
 statement as a Python *type* and see it type-checked live by the
-[PEP 827 mypy fork](https://github.com/iliyasone/mypy-typemap). Snippets are
-**type-checked only, never executed**.
+[PEP 827 mypy fork](https://github.com/iliyasone/mypy-typemap). Without a
+tysql import it doubles as a plain **PEP 827 playground** (the header follows
+along). Snippets never execute on a server.
 
 ## How it works
 
-One Vercel project, two runtimes:
+One Vercel project, three runtimes:
 
 - **Frontend** — Next.js (App Router) with a CodeMirror editor, example
-  presets, inline diagnostics, and shareable `#code=` links.
-- **Backend** — a single Python 3.14 serverless function,
+  presets, inline diagnostics, light/dark themes (device default), and
+  shareable `#code=` links.
+- **Check** — a single Python 3.14 serverless function,
   [`api/check.py`](api/check.py), that runs the mypy fork in-process on the
   posted snippet (the same check `tysql check` performs) and returns parsed
-  diagnostics as JSON.
+  diagnostics as JSON. Snippets are parsed, never executed, server-side.
+- **Run** — [`public/py-worker.js`](public/py-worker.js), a Web Worker that
+  boots Pyodide (real CPython 3.14 on WebAssembly, ~20 MB downloaded once from
+  the CDN), micropip-installs `tysql` from PyPI, and executes the snippet
+  entirely **in the visitor's browser** — nothing user-written ever runs on a
+  server. `reveal_type` is shimmed to `typing.reveal_type`, a hung run is
+  stopped by terminating the worker, and the results pane compares the static
+  verdict against the runtime one. (`typing-extensions` is installed
+  explicitly because `python-typemap` imports it without declaring it.)
 
 Dependencies in [`requirements.txt`](requirements.txt) point at **git heads**,
 so every deploy snapshots the latest `tysql@main` and the fork. A deploy hook

@@ -14,6 +14,8 @@ export interface Diagnostic {
 
 export interface Versions {
   tysql: string;
+  /** Git commit pip resolved for tysql@main; null when unavailable. */
+  tysql_commit?: string | null;
   typemap: string;
   mypy: string;
   fork: boolean;

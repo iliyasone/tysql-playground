@@ -43,3 +43,6 @@ next-env.d.ts
 # python api (local dev)
 .venv/
 __pycache__/
+
+# playwright artifacts
+/.playwright-mcp/

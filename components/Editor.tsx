@@ -18,7 +18,8 @@ import {
 import { EditorView, keymap } from "@codemirror/view";
 import { Prec } from "@codemirror/state";
 import type { Diagnostic } from "@/lib/api";
-import { tysqlDark } from "@/lib/cmTheme";
+import { tysqlDark, tysqlLight } from "@/lib/cmTheme";
+import type { Theme } from "@/lib/theme";
 
 export interface EditorHandle {
   focusLine: (line: number, col?: number) => void;
@@ -29,6 +30,7 @@ interface EditorProps {
   onChange: (value: string) => void;
   diagnostics: Diagnostic[];
   onRun: () => void;
+  theme: Theme;
 }
 
 const severityMap: Record<Diagnostic["severity"], CmDiagnostic["severity"]> = {
@@ -47,7 +49,7 @@ function posFor(view: EditorView, line: number, col: number): number {
 }
 
 function Editor(
-  { value, onChange, diagnostics, onRun }: EditorProps,
+  { value, onChange, diagnostics, onRun, theme }: EditorProps,
   ref: React.Ref<EditorHandle>,
 ) {
   const cmRef = useRef<ReactCodeMirrorRef>(null);
@@ -121,7 +123,7 @@ function Editor(
       ref={cmRef}
       value={value}
       onChange={handleChange}
-      theme={tysqlDark}
+      theme={theme === "light" ? tysqlLight : tysqlDark}
       extensions={extensions}
       height="100%"
       style={{ height: "100%", fontSize: "13.5px" }}
