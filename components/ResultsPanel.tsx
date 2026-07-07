@@ -21,6 +21,8 @@ interface ResultsPanelProps {
   run: RunState;
   exec: ExecState;
   mode: PlaygroundMode;
+  /** Snippet defines test_* functions — pytest × strict-mypy pairing. */
+  testMode: boolean;
   onSelectDiagnostic: (line: number, col: number) => void;
 }
 
@@ -134,17 +136,23 @@ const EXEC_STAGE_LABEL: Record<ExecStage, string> = {
 
 function CheckSection({
   run,
+  testMode,
   onSelectDiagnostic,
 }: {
   run: RunState;
+  testMode: boolean;
   onSelectDiagnostic: (line: number, col: number) => void;
 }) {
   const [raw, setRaw] = useState(false);
+  // In test mode the ignores act as negative assertions (metatypes AGENTS.md).
+  const qualifier = testMode
+    ? "mypy fork · --warn-unused-ignores"
+    : "mypy (PEP 827 fork)";
 
   if (run.status === "loading") {
     return (
       <section>
-        <SectionHeader title="Type check" qualifier="mypy (PEP 827 fork)" />
+        <SectionHeader title="Type check" qualifier={qualifier} />
         <CheckLoading />
       </section>
     );
@@ -152,7 +160,7 @@ function CheckSection({
   if (run.status === "error") {
     return (
       <section>
-        <SectionHeader title="Type check" qualifier="mypy (PEP 827 fork)" />
+        <SectionHeader title="Type check" qualifier={qualifier} />
         <div className="px-4 py-4">
           <p className="text-sm font-medium text-error">Server error</p>
           <p className="mt-1 text-xs text-text-muted">{run.message}</p>
@@ -163,9 +171,11 @@ function CheckSection({
   if (run.status === "idle") {
     return (
       <section>
-        <SectionHeader title="Type check" qualifier="mypy (PEP 827 fork)" />
+        <SectionHeader title="Type check" qualifier={qualifier} />
         <p className="px-4 py-4 text-xs text-text-faint">
-          Check to type-check the snippet →
+          {testMode
+            ? "Test type-checks the suite →"
+            : "Check to type-check the snippet →"}
         </p>
       </section>
     );
@@ -183,7 +193,7 @@ function CheckSection({
     <section>
       <SectionHeader
         title="Type check"
-        qualifier="mypy (PEP 827 fork)"
+        qualifier={qualifier}
         right={
           <span className="flex items-center gap-2">
             <span className="text-xs text-text-muted tabular-nums">
@@ -243,13 +253,18 @@ function CheckSection({
   );
 }
 
-function ExecSection({ exec }: { exec: ExecState }) {
+function ExecSection({ exec, testMode }: { exec: ExecState; testMode: boolean }) {
+  const qualifier = testMode
+    ? "pytest · Python 3.14 in your browser"
+    : "Python 3.14 in your browser";
   if (exec.status === "idle") {
     return (
       <section>
-        <SectionHeader title="Runtime" qualifier="Python 3.14 in your browser" />
+        <SectionHeader title="Runtime" qualifier={qualifier} />
         <p className="px-4 py-4 text-xs text-text-faint">
-          Run to compare against the runtime behaviour →
+          {testMode
+            ? "Test runs the suite with pytest →"
+            : "Run to compare against the runtime behaviour →"}
         </p>
       </section>
     );
@@ -257,7 +272,7 @@ function ExecSection({ exec }: { exec: ExecState }) {
   if (exec.status === "loading") {
     return (
       <section>
-        <SectionHeader title="Runtime" qualifier="Python 3.14 in your browser" />
+        <SectionHeader title="Runtime" qualifier={qualifier} />
         <div className="flex items-center gap-3 px-4 py-4">
           <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
           <p className="text-xs text-text-muted">{EXEC_STAGE_LABEL[exec.stage]}</p>
@@ -268,7 +283,7 @@ function ExecSection({ exec }: { exec: ExecState }) {
   if (exec.status === "error") {
     return (
       <section>
-        <SectionHeader title="Runtime" qualifier="Python 3.14 in your browser" />
+        <SectionHeader title="Runtime" qualifier={qualifier} />
         <div className="px-4 py-4">
           <p className="text-sm font-medium text-error">Runtime unavailable</p>
           <p className="mt-1 text-xs text-text-muted">{exec.message}</p>
@@ -282,7 +297,7 @@ function ExecSection({ exec }: { exec: ExecState }) {
     <section>
       <SectionHeader
         title="Runtime"
-        qualifier="Python 3.14 in your browser"
+        qualifier={qualifier}
         right={
           <span className="text-xs text-text-muted tabular-nums">
             {formatDuration(durationMs)}
@@ -309,27 +324,36 @@ function ExecSection({ exec }: { exec: ExecState }) {
 
 /** One line comparing the two verdicts — the point of having both. */
 function AgreementStrip({ check, exec }: { check: CheckResult; exec: ExecResult }) {
+  const pytest = exec.pytestExit !== null;
   const staticClean = check.exit_code === 0;
-  const runtimeClean = !exec.error;
+  const runtimeClean = pytest ? exec.pytestExit === 0 : !exec.error;
   let dot: string;
   let text: string;
   let message: string;
   if (staticClean && runtimeClean) {
     dot = "bg-success";
     text = "text-success";
-    message = "Static and runtime agree — no issues.";
+    message = pytest
+      ? "Both suites pass — mypy and pytest agree."
+      : "Static and runtime agree — no issues.";
   } else if (!staticClean && !runtimeClean) {
     dot = "bg-success";
     text = "text-success";
-    message = "Static and runtime agree — both reject this snippet.";
+    message = pytest
+      ? "Both suites fail — mypy and pytest agree."
+      : "Static and runtime agree — both reject this snippet.";
   } else if (!staticClean && runtimeClean) {
     dot = "bg-note";
     text = "text-note";
-    message = "The type checker catches what the runtime lets through.";
+    message = pytest
+      ? "mypy rejects what pytest lets through."
+      : "The type checker catches what the runtime lets through.";
   } else {
     dot = "bg-warning";
     text = "text-warning";
-    message = "Runtime failed where the static check was clean.";
+    message = pytest
+      ? "pytest fails where mypy is clean."
+      : "Runtime failed where the static check was clean.";
   }
   return (
     <div className="sticky bottom-0 flex items-center gap-2 border-t border-border bg-bg-elevated px-4 py-2">
@@ -378,6 +402,7 @@ export default function ResultsPanel({
   run,
   exec,
   mode,
+  testMode,
   onSelectDiagnostic,
 }: ResultsPanelProps) {
   if (run.status === "idle" && exec.status === "idle") {
@@ -388,8 +413,12 @@ export default function ResultsPanel({
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
-        <CheckSection run={run} onSelectDiagnostic={onSelectDiagnostic} />
-        <ExecSection exec={exec} />
+        <CheckSection
+          run={run}
+          testMode={testMode}
+          onSelectDiagnostic={onSelectDiagnostic}
+        />
+        <ExecSection exec={exec} testMode={testMode} />
       </div>
       {bothDone && run.status === "done" && exec.status === "done" && (
         <AgreementStrip check={run.result} exec={exec.result} />

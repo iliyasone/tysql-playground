@@ -17,6 +17,13 @@ One Vercel project, three runtimes:
   [`api/check.py`](api/check.py), that runs the mypy fork in-process on the
   posted snippet (the same check `tysql check` performs) and returns parsed
   diagnostics as JSON. Snippets are parsed, never executed, server-side.
+- **Test** — when the snippet defines `test_*` / `mypy_test_*` functions (the
+  metatypes paired-test convention), the primary button becomes **Test** and
+  fires both suites at once: mypy with the metatypes test flags
+  (`--warn-unused-ignores --enable-error-code ignore-without-code`, so
+  `# type: ignore[code]` lines act as honest negative assertions) on the
+  server, and **pytest in the browser** via the same Pyodide worker. The
+  agreement strip then compares the two suite verdicts.
 - **Run** — [`public/py-worker.js`](public/py-worker.js), a Web Worker that
   boots Pyodide (real CPython 3.14 on WebAssembly, ~20 MB downloaded once from
   the CDN), micropip-installs `tysql` from PyPI, and executes the snippet

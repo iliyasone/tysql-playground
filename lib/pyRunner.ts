@@ -6,11 +6,14 @@
 // terminating the worker (the only reliable way to stop synchronous Python).
 
 export type ExecStage = "download" | "install" | "run";
+export type ExecMode = "exec" | "pytest";
 
 export interface ExecResult {
   output: string;
   /** Formatted traceback when the snippet raised; null on a clean run. */
   error: string | null;
+  /** pytest exit code (0 = all passed) when run in pytest mode; else null. */
+  pytestExit: number | null;
   durationMs: number;
 }
 
@@ -24,6 +27,7 @@ export class PyRunError extends Error {}
 export function runPython(
   code: string,
   onStage: (stage: ExecStage) => void,
+  mode: ExecMode = "exec",
 ): Promise<ExecResult> {
   const id = nextId++;
   worker ??= new Worker("/py-worker.js", { type: "module" });
@@ -67,7 +71,12 @@ export function runPython(
       if (msg.id !== id) return;
       cleanup();
       if (msg.kind === "result") {
-        resolve({ output: msg.output, error: msg.error, durationMs: msg.durationMs });
+        resolve({
+          output: msg.output,
+          error: msg.error,
+          pytestExit: msg.pytestExit ?? null,
+          durationMs: msg.durationMs,
+        });
       } else {
         fail(`Python runtime failed: ${msg.message}`, true);
       }
@@ -79,6 +88,6 @@ export function runPython(
 
     w.addEventListener("message", onMessage);
     w.addEventListener("error", onError);
-    w.postMessage({ id, code });
+    w.postMessage({ id, code, mode });
   });
 }

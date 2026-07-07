@@ -209,6 +209,49 @@ def f(p: Loud) -> None:
 print(eval_typing(tm.Uppercase[Literal["pep 827"]]))  # the same machinery, at runtime
 `,
   },
+  {
+    id: "paired",
+    title: "Paired tests — pytest × mypy",
+    code: `# Paired tests — the metatypes convention: one feature, two adjacent tests.
+# mypy_test_X is static-only (assert_type positives, type-ignore negatives,
+# kept honest by --warn-unused-ignores); test_X is runtime (pytest +
+# eval_typing). The Test button runs both suites at once.
+
+from typing import TYPE_CHECKING, Literal, assert_type
+
+import typemap_extensions as tm
+from typemap.type_eval import eval_typing
+
+
+class Point:
+    x: int
+    y: float
+
+
+# A TypedDict computed from Point's annotations, names uppercased
+type Loud = tm.NewTypedDict[
+    *[tm.Member[tm.Uppercase[a.name], a.type] for a in tm.Iter[tm.Attrs[Point]]]
+]
+
+
+def mypy_test_loud_keys() -> None:  # static: mypy checks it, pytest skips it
+    if TYPE_CHECKING:
+        p: Loud = {"X": 1, "Y": 2.0}
+        assert_type(p["X"], int)
+        assert_type(p["Y"], float)
+        p["x"]  # type: ignore[misc]  # negative: the lowercase key must be rejected
+
+
+def test_loud_keys() -> None:  # runtime: pytest checks the evaluated class
+    D = eval_typing(Loud)
+    assert D.__annotations__ == {"X": int, "Y": float}
+    assert D.__required_keys__ == frozenset({"X", "Y"})
+
+
+def test_uppercase() -> None:
+    assert eval_typing(tm.Uppercase[Literal["pep 827"]]) == Literal["PEP 827"]
+`,
+  },
 ];
 
 export const DEFAULT_EXAMPLE_ID = "hello";

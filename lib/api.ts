@@ -59,14 +59,17 @@ function isApiError(value: unknown): value is ApiError {
 
 export async function checkCode(
   code: string,
-  signal?: AbortSignal,
+  options?: { test?: boolean; signal?: AbortSignal },
 ): Promise<CheckResult> {
+  const { test = false, signal } = options ?? {};
   let res: Response;
   try {
     res = await fetch("/api/check", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
+      // test switches the server to the metatypes test-suite mypy flags
+      // (--warn-unused-ignores &c.), so type-ignore negatives stay honest.
+      body: JSON.stringify({ code, test }),
       signal,
     });
   } catch (err) {

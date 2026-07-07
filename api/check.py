@@ -52,6 +52,14 @@ _MYPY_FLAGS = [
     str(_CACHE_DIR),
 ]
 
+# Test mode (metatypes convention, see its AGENTS.md): `# type: ignore[code]`
+# lines act as negative assertions, kept honest by --warn-unused-ignores.
+_TEST_MODE_FLAGS = [
+    "--warn-unused-ignores",
+    "--enable-error-code",
+    "ignore-without-code",
+]
+
 # path[:line[:col]]: severity: message [code] — line/col/code may each be absent
 # (file-level errors carry no position; notes carry no code).
 _DIAG_RE = re.compile(
@@ -183,13 +191,14 @@ def _versions() -> dict[str, object]:
     }
 
 
-def run_check(code: str) -> dict[str, object]:
+def run_check(code: str, test_mode: bool = False) -> dict[str, object]:
     started = time.monotonic()
+    extra_flags = _TEST_MODE_FLAGS if test_mode else []
     with _MYPY_LOCK:
         _WORKDIR.mkdir(parents=True, exist_ok=True)
         _SNIPPET.write_text(code, encoding="utf-8")
         stdout, stderr, exit_code = mypy_api.run(
-            [*_MYPY_FLAGS, *_typeshed_flags(), str(_SNIPPET)]
+            [*_MYPY_FLAGS, *extra_flags, *_typeshed_flags(), str(_SNIPPET)]
         )
     duration_ms = int((time.monotonic() - started) * 1000)
 
@@ -282,6 +291,7 @@ class handler(BaseHTTPRequestHandler):  # noqa: N801 — Vercel requires this na
             code = payload["code"]
             if not isinstance(code, str):
                 raise TypeError
+            test_mode = bool(payload.get("test"))
         except (json.JSONDecodeError, KeyError, TypeError):
             self._reply(400, {"error": 'expected JSON body {"code": "<python source>"}'})
             return
@@ -289,7 +299,7 @@ class handler(BaseHTTPRequestHandler):  # noqa: N801 — Vercel requires this na
             self._reply(413, {"error": f"snippet larger than {MAX_CODE_BYTES // 1024} KiB"})
             return
         try:
-            self._reply(200, run_check(code))
+            self._reply(200, run_check(code, test_mode))
         except Exception as exc:  # surface unexpected failures as JSON, not a 502
             self._reply(500, {"error": f"{type(exc).__name__}: {exc}"})
 

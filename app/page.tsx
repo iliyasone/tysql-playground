@@ -22,6 +22,11 @@ const DEFAULT_EXAMPLE: Example =
 
 const IMPORTS_TYSQL = /^\s*(from\s+tysql\b|import\s+tysql\b)/m;
 
+// The metatypes test convention: module-level test_* / mypy_test_* functions.
+// Such snippets get a combined "Test" action — pytest in the browser plus
+// mypy with the strict test-suite flags on the server.
+const LOOKS_LIKE_TESTS = /^(async\s+)?def\s+(mypy_)?test_\w+/m;
+
 function readHashCode(): string | null {
   if (typeof window === "undefined") return null;
   const match = window.location.hash.match(/(?:^#|&)code=([^&]+)/);
@@ -97,7 +102,10 @@ export default function Home() {
     inFlight.current = ac;
     setRun({ status: "loading" });
     try {
-      const result = await checkCode(codeRef.current, ac.signal);
+      const result = await checkCode(codeRef.current, {
+        test: LOOKS_LIKE_TESTS.test(codeRef.current),
+        signal: ac.signal,
+      });
       if (ac.signal.aborted) return;
       setRun({ status: "done", result });
       setDiagnostics(result.diagnostics);
@@ -111,10 +119,13 @@ export default function Home() {
 
   const execRunning = exec.status === "loading";
   const runSnippet = useCallback(async () => {
+    const pytest = LOOKS_LIKE_TESTS.test(codeRef.current);
     setExec({ status: "loading", stage: "run" });
     try {
-      const result = await runPython(codeRef.current, (stage) =>
-        setExec({ status: "loading", stage }),
+      const result = await runPython(
+        codeRef.current,
+        (stage) => setExec({ status: "loading", stage }),
+        pytest ? "pytest" : "exec",
       );
       setExec({ status: "done", result });
     } catch (err) {
@@ -123,6 +134,13 @@ export default function Home() {
       setExec({ status: "error", message });
     }
   }, []);
+
+  // Test snippets get one primary action that runs both suites at once.
+  const testMode = LOOKS_LIKE_TESTS.test(code);
+  const primaryAction = useCallback(() => {
+    runCheck();
+    if (LOOKS_LIKE_TESTS.test(codeRef.current)) runSnippet();
+  }, [runCheck, runSnippet]);
 
   // Cmd/Ctrl+Enter checks from anywhere on the page; events originating inside
   // the editor are skipped — the CodeMirror keymap handles those, and skipping
@@ -133,11 +151,11 @@ export default function Home() {
       if (event.target instanceof Element && event.target.closest(".cm-editor"))
         return;
       event.preventDefault();
-      runCheck();
+      primaryAction();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [runCheck]);
+  }, [primaryAction]);
 
   const handleSelectExample = useCallback((id: string) => {
     const ex = EXAMPLES.find((e) => e.id === id);
@@ -208,45 +226,51 @@ export default function Home() {
               >
                 {copied ? "Copied ✓" : "Share"}
               </button>
+              {!testMode && (
+                <button
+                  type="button"
+                  onClick={runSnippet}
+                  disabled={execRunning}
+                  title="Runs in your browser — downloads a ~20 MB Python runtime on first use"
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {execRunning ? (
+                    <>
+                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
+                      {EXEC_BUTTON_LABEL[exec.stage]}
+                    </>
+                  ) : (
+                    <>
+                      <svg
+                        viewBox="0 0 12 12"
+                        width="10"
+                        height="10"
+                        fill="currentColor"
+                        aria-hidden="true"
+                      >
+                        <path d="M2.5 1.2a.5.5 0 0 1 .755-.43l7.2 4.37a.5.5 0 0 1 0 .855l-7.2 4.37a.5.5 0 0 1-.755-.43V1.2Z" />
+                      </svg>
+                      Run
+                    </>
+                  )}
+                </button>
+              )}
               <button
                 type="button"
-                onClick={runSnippet}
-                disabled={execRunning}
-                title="Runs in your browser — downloads a ~20 MB Python runtime on first use"
-                className="flex items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {execRunning ? (
-                  <>
-                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
-                    {EXEC_BUTTON_LABEL[exec.stage]}
-                  </>
-                ) : (
-                  <>
-                    <svg
-                      viewBox="0 0 12 12"
-                      width="10"
-                      height="10"
-                      fill="currentColor"
-                      aria-hidden="true"
-                    >
-                      <path d="M2.5 1.2a.5.5 0 0 1 .755-.43l7.2 4.37a.5.5 0 0 1 0 .855l-7.2 4.37a.5.5 0 0 1-.755-.43V1.2Z" />
-                    </svg>
-                    Run
-                  </>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={runCheck}
-                disabled={checking}
+                onClick={primaryAction}
+                disabled={checking || (testMode && execRunning)}
                 className="flex min-w-[92px] items-center justify-center gap-2 rounded-md bg-accent px-3.5 py-1.5 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
-                title="Type-check with the mypy fork (⌘/Ctrl + Enter)"
+                title={
+                  testMode
+                    ? "Run both suites: pytest in your browser + mypy with the metatypes test flags (⌘/Ctrl + Enter)"
+                    : "Type-check with the mypy fork (⌘/Ctrl + Enter)"
+                }
               >
-                {checking ? (
+                {checking || (testMode && execRunning) ? (
                   <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent-fg/40 border-t-accent-fg" />
                 ) : (
                   <>
-                    Check
+                    {testMode ? "Test" : "Check"}
                     <span className="font-normal opacity-70">⌘↵</span>
                   </>
                 )}
@@ -260,7 +284,7 @@ export default function Home() {
               value={code}
               onChange={setCode}
               diagnostics={diagnostics}
-              onRun={runCheck}
+              onRun={primaryAction}
               theme={theme}
             />
           </div>
@@ -272,6 +296,7 @@ export default function Home() {
             run={run}
             exec={exec}
             mode={mode}
+            testMode={testMode}
             onSelectDiagnostic={handleSelectDiagnostic}
           />
         </section>
