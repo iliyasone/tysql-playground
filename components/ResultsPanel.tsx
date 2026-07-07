@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { CheckResult, Diagnostic, Severity } from "@/lib/api";
-import type { ExecResult, ExecStage } from "@/lib/pyRunner";
+import type { CheckResult, Diagnostic, Severity, Versions } from "@/lib/api";
+import type { ExecResult, ExecStage, RuntimeVersions } from "@/lib/pyRunner";
 import type { PlaygroundMode } from "@/components/Header";
 
 export type RunState =
@@ -21,9 +21,36 @@ interface ResultsPanelProps {
   run: RunState;
   exec: ExecState;
   mode: PlaygroundMode;
-  /** Snippet defines test_* functions — pytest × strict-mypy pairing. */
-  testMode: boolean;
+  /** Tool versions from the server's Check (git main), for block headers. */
+  versions: Versions | null;
+  /** Which of the three blocks the current snippet opts into. */
+  mypyActive: boolean;
+  pytestActive: boolean;
+  runtimeActive: boolean;
   onSelectDiagnostic: (line: number, col: number) => void;
+}
+
+const MYPY_REPO = "https://github.com/iliyasone/mypy-typemap";
+const TYPEMAP_REPO = "https://github.com/iliyasone/python-typemap";
+const PYODIDE_URL = "https://pyodide.org/";
+
+/** `1.20.0+dev.<40-char sha>` → `1.20.0+dev.<7-char sha>`, to keep headers short. */
+function shortVersion(v: string): string {
+  return v.replace(/(\+dev\.[0-9a-f]{7})[0-9a-f]{33}$/, "$1");
+}
+
+/** Inline, subtly-underlined external link, matching the footer's tool links. */
+function ToolLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-medium text-text-muted decoration-border-strong underline-offset-2 transition-colors hover:text-text hover:underline"
+    >
+      {children}
+    </a>
+  );
 }
 
 const severityStyle: Record<Severity, { label: string; dot: string; text: string }> = {
@@ -94,7 +121,7 @@ function SectionHeader({
   right,
 }: {
   title: string;
-  qualifier: string;
+  qualifier: React.ReactNode;
   right?: React.ReactNode;
 }) {
   return (
@@ -136,18 +163,27 @@ const EXEC_STAGE_LABEL: Record<ExecStage, string> = {
 
 function CheckSection({
   run,
-  testMode,
+  strict,
+  versions,
   onSelectDiagnostic,
 }: {
   run: RunState;
-  testMode: boolean;
+  /** Test suite → strict flags (ignores act as negative assertions). */
+  strict: boolean;
+  versions: Versions | null;
   onSelectDiagnostic: (line: number, col: number) => void;
 }) {
   const [raw, setRaw] = useState(false);
-  // In test mode the ignores act as negative assertions (metatypes AGENTS.md).
-  const qualifier = testMode
-    ? "mypy fork · --warn-unused-ignores"
-    : "mypy (PEP 827 fork)";
+  // The exact fork + version doing the checking, linked like the footer.
+  const forkVersion = versions ? shortVersion(versions.mypy) : null;
+  const qualifier = (
+    <>
+      <ToolLink href={MYPY_REPO}>
+        mypy fork{forkVersion ? ` ${forkVersion}` : ""}
+      </ToolLink>
+      {strict ? " · --warn-unused-ignores" : " · PEP 827"}
+    </>
+  );
 
   if (run.status === "loading") {
     return (
@@ -173,9 +209,9 @@ function CheckSection({
       <section>
         <SectionHeader title="Type check" qualifier={qualifier} />
         <p className="px-4 py-4 text-xs text-text-faint">
-          {testMode
-            ? "Test type-checks the suite →"
-            : "Check to type-check the snippet →"}
+          {strict
+            ? "Type-checks the suite →"
+            : "Type-checks the snippet →"}
         </p>
       </section>
     );
@@ -253,17 +289,43 @@ function CheckSection({
   );
 }
 
-function ExecSection({ exec, testMode }: { exec: ExecState; testMode: boolean }) {
-  const qualifier = testMode
-    ? "pytest · Python 3.14 in your browser"
-    : "Python 3.14 in your browser";
+/** Runtime block header — the actual browser runtime + the typemap it resolved
+ * (which can differ from the server's Check; that skew is the point of showing
+ * it). Versions arrive only once a run completes. */
+function runtimeQualifier(
+  pytest: boolean,
+  v: RuntimeVersions | null,
+): React.ReactNode {
+  const typemap = v?.typemap ? shortVersion(v.typemap) : null;
+  return (
+    <>
+      {pytest && "pytest · "}
+      <ToolLink href={PYODIDE_URL}>Python 3.14</ToolLink>
+      {typemap ? (
+        <>
+          {" · "}
+          <ToolLink href={TYPEMAP_REPO}>typemap {typemap}</ToolLink>
+        </>
+      ) : (
+        " in your browser"
+      )}
+    </>
+  );
+}
+
+function ExecSection({ exec, pytest }: { exec: ExecState; pytest: boolean }) {
+  // Prefer the run's own verdict for labelling once it exists.
+  const isPytest =
+    exec.status === "done" ? exec.result.pytestExit !== null : pytest;
+  const runtimeVersions = exec.status === "done" ? exec.result.versions : null;
+  const qualifier = runtimeQualifier(isPytest, runtimeVersions);
   if (exec.status === "idle") {
     return (
       <section>
         <SectionHeader title="Runtime" qualifier={qualifier} />
         <p className="px-4 py-4 text-xs text-text-faint">
-          {testMode
-            ? "Test runs the suite with pytest →"
+          {pytest
+            ? "Runs the suite with pytest →"
             : "Run to compare against the runtime behaviour →"}
         </p>
       </section>
@@ -402,27 +464,38 @@ export default function ResultsPanel({
   run,
   exec,
   mode,
-  testMode,
+  versions,
+  mypyActive,
+  pytestActive,
+  runtimeActive,
   onSelectDiagnostic,
 }: ResultsPanelProps) {
   if (run.status === "idle" && exec.status === "idle") {
     return <IdleExplainer mode={mode} />;
   }
 
+  // Show only the blocks the snippet opts into (or that already have a result).
+  const showCheck = mypyActive || run.status !== "idle";
+  const showExec = pytestActive || runtimeActive || exec.status !== "idle";
   const bothDone = run.status === "done" && exec.status === "done";
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
-        <CheckSection
-          run={run}
-          testMode={testMode}
-          onSelectDiagnostic={onSelectDiagnostic}
-        />
-        <ExecSection exec={exec} testMode={testMode} />
+        {showCheck && (
+          <CheckSection
+            run={run}
+            strict={pytestActive}
+            versions={versions}
+            onSelectDiagnostic={onSelectDiagnostic}
+          />
+        )}
+        {showExec && <ExecSection exec={exec} pytest={pytestActive} />}
       </div>
-      {bothDone && run.status === "done" && exec.status === "done" && (
-        <AgreementStrip check={run.result} exec={exec.result} />
-      )}
+      {bothDone && showCheck && showExec &&
+        run.status === "done" &&
+        exec.status === "done" && (
+          <AgreementStrip check={run.result} exec={exec.result} />
+        )}
     </div>
   );
 }
