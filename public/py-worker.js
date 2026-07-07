@@ -39,6 +39,21 @@ def _playground_run(code):
     return _playground_cap(buf.getvalue()), error
 
 
+def _playground_versions():
+    """The tysql / typemap actually resolved in THIS Pyodide runtime (PyPI),
+    which can differ from the server's git-main Check — surfaced so the two
+    sides are honestly labelled."""
+    from importlib.metadata import version
+
+    def _v(dist):
+        try:
+            return version(dist)
+        except Exception:
+            return None
+
+    return {"tysql": _v("tysql"), "typemap": _v("python-typemap")}
+
+
 _playground_pytest_seq = 0
 
 
@@ -79,14 +94,24 @@ async function boot() {
   await micropip.install(["tysql", "typing-extensions", "pytest"]);
   micropip.destroy();
   pyodide.runPython(SETUP);
-  return pyodide;
+  let versions = null;
+  try {
+    const vfn = pyodide.globals.get("_playground_versions");
+    const proxy = vfn();
+    versions = proxy.toJs({ dict_converter: Object.fromEntries });
+    proxy.destroy();
+    vfn.destroy();
+  } catch {
+    versions = null; // labels just omit the runtime version
+  }
+  return { pyodide, versions };
 }
 
 onmessage = async (event) => {
   const { id, code, mode } = event.data; // mode: "exec" | "pytest"
   try {
     bootPromise ??= boot();
-    const pyodide = await bootPromise;
+    const { pyodide, versions } = await bootPromise;
     postMessage({ kind: "stage", stage: "run" });
     const started = performance.now();
     const isPytest = mode === "pytest";
@@ -104,6 +129,7 @@ onmessage = async (event) => {
       // exec returns (output, traceback|None); pytest returns (output, exit code)
       error: isPytest ? null : (second ?? null),
       pytestExit: isPytest ? second : null,
+      runtimeVersions: versions ?? null,
       durationMs: Math.round(performance.now() - started),
     });
   } catch (err) {

@@ -8,12 +8,21 @@
 export type ExecStage = "download" | "install" | "run";
 export type ExecMode = "exec" | "pytest";
 
+/** tysql / typemap resolved in the Pyodide runtime (PyPI), reported by the
+ * worker after boot. Either field may be null if metadata lookup failed. */
+export interface RuntimeVersions {
+  tysql: string | null;
+  typemap: string | null;
+}
+
 export interface ExecResult {
   output: string;
   /** Formatted traceback when the snippet raised; null on a clean run. */
   error: string | null;
   /** pytest exit code (0 = all passed) when run in pytest mode; else null. */
   pytestExit: number | null;
+  /** Package versions from the browser runtime; null if unavailable. */
+  versions: RuntimeVersions | null;
   durationMs: number;
 }
 
@@ -75,6 +84,7 @@ export function runPython(
           output: msg.output,
           error: msg.error,
           pytestExit: msg.pytestExit ?? null,
+          versions: msg.runtimeVersions ?? null,
           durationMs: msg.durationMs,
         });
       } else {
