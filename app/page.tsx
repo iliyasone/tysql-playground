@@ -523,6 +523,7 @@ export default function Home() {
   const checking = check.status === "loading";
   const pytestRunning = pytest.status === "loading";
   const runtimeRunning = runtime.status === "loading";
+  const anyRunning = checking || pytestRunning || runtimeRunning;
 
   // Prev/next among the ordered examples, by the current example's position.
   const currentIndex = examples.findIndex((e) => e.name === exampleName);
@@ -630,12 +631,22 @@ export default function Home() {
                   play
                   onClick={runRuntime}
                 />
-                <span
-                  title="Enter runs every highlighted tool"
-                  className="ml-0.5 select-none rounded border border-border bg-bg-elevated px-1.5 py-1 font-mono text-[11px] text-text-faint"
+                <button
+                  type="button"
+                  onClick={runDetected}
+                  disabled={anyRunning}
+                  title="Run every highlighted tool — ⌘/Ctrl + Enter"
+                  className="ml-0.5 flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-80"
                 >
-                  ⌘↵
-                </span>
+                  {anyRunning ? (
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent-fg/40 border-t-accent-fg" />
+                  ) : (
+                    <span className="select-none font-mono text-[11px] leading-none">
+                      ⌘↵
+                    </span>
+                  )}
+                  Run All
+                </button>
               </div>
             </div>
           </div>
