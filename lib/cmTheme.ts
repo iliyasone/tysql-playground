@@ -9,9 +9,13 @@ export const tysqlLight = createTheme({
     backgroundImage: "",
     foreground: "#1a1d22",
     caret: "#4c63d2",
+    // The active-line highlight must stay translucent: it renders above the
+    // selection layer, so an opaque tint would hide the real selection while
+    // leaving the (content-layer) match highlights visible — making other
+    // occurrences look more selected than the actual one.
     selection: "#b3c6f5",
-    selectionMatch: "#d7e0fb",
-    lineHighlight: "#f4f6fa",
+    selectionMatch: "rgba(76, 99, 210, 0.16)",
+    lineHighlight: "rgba(26, 29, 34, 0.045)",
     gutterBackground: "#fbfcfd",
     gutterForeground: "#aeb5c0",
     gutterActiveForeground: "#4a515c",
@@ -42,9 +46,10 @@ export const tysqlDark = createTheme({
     backgroundImage: "",
     foreground: "#e6e8ec",
     caret: "#7c9cff",
+    // Translucent active-line tint — see the light theme note above.
     selection: "#35527f",
-    selectionMatch: "#28405f",
-    lineHighlight: "#12151a",
+    selectionMatch: "rgba(124, 156, 255, 0.16)",
+    lineHighlight: "rgba(230, 232, 236, 0.04)",
     gutterBackground: "#0b0c0e",
     gutterForeground: "#5b626d",
     gutterActiveForeground: "#aeb6c2",
