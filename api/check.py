@@ -22,6 +22,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.metadata import PackageNotFoundError, distribution, version
+from importlib.resources import files
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -191,6 +192,47 @@ def _versions() -> dict[str, object]:
     }
 
 
+# Only numbered demo files (1_*.py, 99_*.py) are playground snippets; the digit
+# prefix is both the order and the URL. The shared users.py schema and
+# __init__.py ship in the package too but are not standalone snippets.
+_EXAMPLE_NAME_RE = re.compile(r"^(\d+)_.+\.py$")
+# The display title is the first `# Title — blurb` comment; text before the em dash.
+_EXAMPLE_TITLE_RE = re.compile(r"^#\s*(.+)")
+
+
+def _example_title(code: str, name: str) -> str:
+    for line in code.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = _EXAMPLE_TITLE_RE.match(line)
+        if match:
+            return match.group(1).split("—")[0].strip() or name
+        break  # first non-blank line is not a comment — no title to parse
+    return name
+
+
+def _examples() -> list[dict[str, object]]:
+    """The bundled tysql demo snippets, read from the installed package.
+
+    Served in the health payload so the frontend has one source of truth that
+    tracks whatever tysql the deploy resolved. Any failure (e.g. an older tysql
+    without the examples subpackage) degrades to an empty list.
+    """
+    try:
+        out: list[tuple[int, dict[str, object]]] = []
+        for entry in files("tysql.examples").iterdir():
+            name = entry.name
+            match = _EXAMPLE_NAME_RE.match(name)
+            if not match:
+                continue
+            code = entry.read_text(encoding="utf-8")
+            out.append((int(match.group(1)), {"name": name, "title": _example_title(code, name), "code": code}))
+        return [example for _, example in sorted(out, key=lambda item: item[0])]
+    except Exception:
+        return []
+
+
 def run_check(code: str, test_mode: bool = False) -> dict[str, object]:
     started = time.monotonic()
     extra_flags = _TEST_MODE_FLAGS if test_mode else []
@@ -259,7 +301,11 @@ class handler(BaseHTTPRequestHandler):  # noqa: N801 — Vercel requires this na
         self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
-        payload: dict[str, object] = {"ok": True, "versions": _versions()}
+        payload: dict[str, object] = {
+            "ok": True,
+            "versions": _versions(),
+            "examples": _examples(),
+        }
         # /api/check?debug=1 — remote diagnosis of the deployed environment:
         # is the fork's typeshed actually on disk, and does a trivial check run?
         if "debug" in (self.path.partition("?")[2] or ""):

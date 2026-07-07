@@ -5,7 +5,7 @@ import {
   compressToEncodedURIComponent,
   decompressFromEncodedURIComponent,
 } from "lz-string";
-import { EXAMPLES, DEFAULT_EXAMPLE_ID, type Example } from "@/lib/examples";
+import { FALLBACK_EXAMPLE, isExampleName, type Example } from "@/lib/examples";
 import { checkCode, getHealth, type Diagnostic, type Versions } from "@/lib/api";
 import { runPython, PyRunError, type ExecMode } from "@/lib/pyRunner";
 import { useTheme } from "@/lib/theme";
@@ -16,9 +16,6 @@ import ResultsPanel, {
   type RunState,
 } from "@/components/ResultsPanel";
 import StatusBar from "@/components/StatusBar";
-
-const DEFAULT_EXAMPLE: Example =
-  EXAMPLES.find((e) => e.id === DEFAULT_EXAMPLE_ID) ?? EXAMPLES[0];
 
 const IMPORTS_TYSQL = /^\s*(from\s+tysql\b|import\s+tysql\b)/m;
 
@@ -48,7 +45,8 @@ const STORAGE_KEY = "tysql-playground:session";
 
 interface Session {
   code: string;
-  exampleId: string;
+  // Filename of the example this snippet started from ("" for a shared/edited one).
+  exampleName: string;
 }
 
 function readHashCode(): string | null {
@@ -62,37 +60,60 @@ function readHashCode(): string | null {
   }
 }
 
+// An example filename from the path, e.g. "/5_join.py" → "5_join.py".
+function readPathExample(): string | null {
+  if (typeof window === "undefined") return null;
+  const seg = decodeURIComponent(window.location.pathname.replace(/^\/+/, ""));
+  return isExampleName(seg) ? seg : null;
+}
+
 function readSession(store: Storage): Session | null {
   try {
     const raw = store.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as { code?: unknown; exampleId?: unknown };
+    const parsed = JSON.parse(raw) as { code?: unknown; exampleName?: unknown };
     if (typeof parsed.code !== "string") return null;
     return {
       code: parsed.code,
-      exampleId: typeof parsed.exampleId === "string" ? parsed.exampleId : "",
+      exampleName:
+        typeof parsed.exampleName === "string" ? parsed.exampleName : "",
     };
   } catch {
     return null;
   }
 }
 
-// The initial snippet for this page: a shared link wins (and is cached), then
-// this tab's own session, then the last edit from any tab, then the default.
-function resolveInitialSession(): Session {
+interface InitialSnippet extends Session {
+  // Set when the URL asks for an example we don't have bundled yet — the code is
+  // filled in once the health fetch returns the examples.
+  pending?: string;
+}
+
+// The initial snippet for this page: a shared link wins (and is cached), then a
+// requested example filename, then this tab's session, then the last edit from
+// any tab, then the default example.
+function resolveInitialSnippet(): InitialSnippet {
   const shared = readHashCode();
   if (shared !== null) {
-    const session = { code: shared, exampleId: "" };
+    const session = { code: shared, exampleName: "" };
     writeSession(session);
     // Redirect to the clean site — the snippet now lives in cache, not the URL.
-    window.history.replaceState(null, "", window.location.pathname);
+    window.history.replaceState(null, "", "/");
     return session;
+  }
+  const requested = readPathExample();
+  if (requested !== null) {
+    if (requested === FALLBACK_EXAMPLE.name) {
+      return { code: FALLBACK_EXAMPLE.code, exampleName: requested };
+    }
+    // Not bundled — show a loader until the examples arrive from the API.
+    return { code: "", exampleName: requested, pending: requested };
   }
   return (
     readSession(window.sessionStorage) ??
     readSession(window.localStorage) ?? {
-      code: DEFAULT_EXAMPLE.code,
-      exampleId: DEFAULT_EXAMPLE.id,
+      code: FALLBACK_EXAMPLE.code,
+      exampleName: FALLBACK_EXAMPLE.name,
     }
   );
 }
@@ -176,11 +197,49 @@ function ToolButton({
   );
 }
 
+// Below-editor navigation between adjacent bundled examples. Shown only while an
+// example is selected (hidden for a shared/edited snippet).
+function ExampleNav({
+  prev,
+  next,
+  onGo,
+}: {
+  prev: Example | null;
+  next: Example | null;
+  onGo: (name: string) => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-bg-panel px-3 py-2">
+      <button
+        type="button"
+        disabled={!prev}
+        onClick={() => prev && onGo(prev.name)}
+        title={prev ? `Previous: ${prev.title}` : "No previous example"}
+        className="rounded-md border border-border bg-bg-elevated px-2.5 py-1 text-xs text-text-muted transition-colors hover:border-border-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        ← Previous
+      </button>
+      <button
+        type="button"
+        disabled={!next}
+        onClick={() => next && onGo(next.name)}
+        title={next ? `Next: ${next.title}` : "No next example"}
+        className="rounded-md border border-border bg-bg-elevated px-2.5 py-1 text-xs text-text-muted transition-colors hover:border-border-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Next example →
+      </button>
+    </div>
+  );
+}
+
 export default function Home() {
-  // Deterministic first render (default example) → hash applied after mount,
-  // so hydration never mismatches.
-  const [code, setCode] = useState(DEFAULT_EXAMPLE.code);
-  const [exampleId, setExampleId] = useState(DEFAULT_EXAMPLE.id);
+  // Deterministic first render (the bundled fallback) → URL/hash/storage applied
+  // after mount, so hydration never mismatches.
+  const [code, setCode] = useState(FALLBACK_EXAMPLE.code);
+  const [exampleName, setExampleName] = useState(FALLBACK_EXAMPLE.name);
+  // The example list, seeded with the fallback and replaced by the API's copy
+  // (the bundled tysql examples) once health resolves.
+  const [examples, setExamples] = useState<Example[]>([FALLBACK_EXAMPLE]);
   // Three independent result blocks — mypy, pytest, runtime — since a snippet
   // can carry all three kinds of fixture at once and each is run separately.
   const [check, setCheck] = useState<RunState>({ status: "idle" });
@@ -200,11 +259,18 @@ export default function Home() {
   const editorRef = useRef<EditorHandle>(null);
   const shareRef = useRef<HTMLDivElement>(null);
   const inFlight = useRef<AbortController | null>(null);
-  // Latest code, read inside the (stable) run handlers without re-creating them.
+  // An example filename the URL asked for that wasn't bundled — resolved when
+  // the examples arrive from the API.
+  const pendingName = useRef<string | null>(null);
+  // Latest code / selection, read inside stable handlers without re-creating them.
   const codeRef = useRef(code);
+  const exampleNameRef = useRef(exampleName);
   useEffect(() => {
     codeRef.current = code;
   }, [code]);
+  useEffect(() => {
+    exampleNameRef.current = exampleName;
+  }, [exampleName]);
 
   // tysql ↔ PEP 827 morph, debounced so the title doesn't flicker mid-keystroke.
   useEffect(() => {
@@ -215,15 +281,58 @@ export default function Home() {
     return () => window.clearTimeout(id);
   }, [code]);
 
-  // Resolve the initial snippet after mount (hash / storage are client-only, so
-  // the first render is deterministic and hydration never mismatches). A shared
-  // link is cached and stripped from the URL here.
+  // Resolve the initial snippet after mount (URL / hash / storage are
+  // client-only, so the first render is deterministic and hydration never
+  // mismatches). A shared link is cached and stripped from the URL here; an
+  // example the URL asks for but we haven't bundled waits for the health fetch.
   useEffect(() => {
-    const session = resolveInitialSession();
+    const initial = resolveInitialSnippet();
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setCode(session.code);
-    setExampleId(session.exampleId);
+    setExampleName(initial.exampleName);
+    if (initial.pending) {
+      pendingName.current = initial.pending;
+      return; // stay unready — the editor mounts once the example arrives
+    }
+    setCode(initial.code);
     setReady(true);
+  }, []);
+
+  // Fetch versions + the bundled examples once, for the status bar and the
+  // example picker. Resolves any example the URL asked for but we didn't bundle.
+  useEffect(() => {
+    const ac = new AbortController();
+    getHealth(ac.signal)
+      .then((h) => {
+        if (ac.signal.aborted) return;
+        setVersions(h.versions);
+        const list = h.examples.length ? h.examples : [FALLBACK_EXAMPLE];
+        setExamples(list);
+
+        const pend = pendingName.current;
+        if (pend) {
+          pendingName.current = null;
+          const ex = list.find((e) => e.name === pend) ?? FALLBACK_EXAMPLE;
+          setCode(ex.code);
+          setExampleName(ex.name);
+          setReady(true);
+        } else {
+          // Refresh the untouched default to the API's canonical copy, so
+          // "pristine" (share / URL) is judged against what tysql actually ships.
+          const ex = list.find((e) => e.name === exampleNameRef.current);
+          if (ex && codeRef.current === FALLBACK_EXAMPLE.code) setCode(ex.code);
+        }
+      })
+      .catch(() => {
+        // Health unreachable (e.g. checker not running in local dev): fall back
+        // so the editor still mounts for a URL-requested example.
+        if (pendingName.current) {
+          pendingName.current = null;
+          setCode(FALLBACK_EXAMPLE.code);
+          setExampleName(FALLBACK_EXAMPLE.name);
+          setReady(true);
+        }
+      });
+    return () => ac.abort();
   }, []);
 
   // Mirror the working snippet into storage on every edit, so a refresh or
@@ -231,19 +340,27 @@ export default function Home() {
   // placeholder default is never written over a real saved session.
   useEffect(() => {
     if (!ready) return;
-    writeSession({ code, exampleId });
-  }, [ready, code, exampleId]);
+    writeSession({ code, exampleName });
+  }, [ready, code, exampleName]);
 
-  // Fetch versions once for the status bar.
+  // The example the current snippet started from, and whether the snippet is
+  // still its verbatim, unedited code.
+  const currentExample =
+    examples.find((e) => e.name === exampleName) ??
+    (exampleName === FALLBACK_EXAMPLE.name ? FALLBACK_EXAMPLE : null);
+  const isPristine = currentExample !== null && currentExample.code === code;
+
+  // Keep the address bar in sync: `/<name>` for an unedited example (a clean,
+  // shareable file link), `/` otherwise. Single owner of the path — Share never
+  // mutates it.
   useEffect(() => {
-    const ac = new AbortController();
-    getHealth(ac.signal)
-      .then((h) => setVersions(h.versions))
-      .catch(() => {
-        /* footer just stays in "connecting" state */
-      });
-    return () => ac.abort();
-  }, []);
+    if (!ready || typeof window === "undefined") return;
+    if (window.location.hash) return; // a freshly-applied shared link
+    const target = isPristine ? `/${exampleName}` : "/";
+    if (window.location.pathname !== target) {
+      window.history.replaceState(null, "", target);
+    }
+  }, [ready, isPristine, exampleName]);
 
   const runCheck = useCallback(async () => {
     inFlight.current?.abort();
@@ -285,21 +402,16 @@ export default function Home() {
     },
     [],
   );
-  const runPytest = useCallback(
-    () => runExec("pytest", setPytest),
-    [runExec],
-  );
-  const runRuntime = useCallback(
-    () => runExec("exec", setRuntime),
-    [runExec],
-  );
+  const runPytest = useCallback(() => runExec("pytest", setPytest), [runExec]);
+  const runRuntime = useCallback(() => runExec("exec", setRuntime), [runExec]);
 
   // Which of the three blocks the snippet opts into. mypy also covers test
   // suites (strict flags); when nothing at all is detected it's the fallback,
   // so ⌘/Ctrl+Enter always does something sensible.
   const pytestDetected = HAS_PYTEST.test(code);
   const runtimeDetected = HAS_MAIN.test(code);
-  const mypyDetected = HAS_MYPY_FIXTURES.test(code) || LOOKS_LIKE_TESTS.test(code);
+  const mypyDetected =
+    HAS_MYPY_FIXTURES.test(code) || LOOKS_LIKE_TESTS.test(code);
 
   // ⌘/Ctrl+Enter: run every tool the snippet calls for. The two browser
   // executions are sequenced because Pyodide is single-threaded; mypy runs on
@@ -323,7 +435,10 @@ export default function Home() {
       if (!(event.metaKey || event.ctrlKey)) return;
       const key = event.key.toLowerCase();
       if (key !== "enter" && key !== "s") return;
-      if (event.target instanceof Element && event.target.closest(".cm-editor")) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".cm-editor")
+      ) {
         if (key === "s") event.preventDefault();
         return;
       }
@@ -334,32 +449,37 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [runDetected]);
 
-  const handleSelectExample = useCallback((id: string) => {
-    const ex = EXAMPLES.find((e) => e.id === id);
-    if (!ex) return;
-    setExampleId(id);
+  const loadExample = useCallback((ex: Example) => {
+    setExampleName(ex.name);
     setCode(ex.code);
     setDiagnostics([]);
     setCheck({ status: "idle" });
     setPytest({ status: "idle" });
     setRuntime({ status: "idle" });
-    if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", window.location.pathname);
-    }
   }, []);
 
-  // Encode the current snippet into the URL hash and return the shareable link.
+  const handleSelectExample = useCallback(
+    (name: string) => {
+      const ex = examples.find((e) => e.name === name);
+      if (ex) loadExample(ex);
+    },
+    [examples, loadExample],
+  );
+
+  // Encode the current snippet into a shareable link. An unedited example is a
+  // clean `/<name>` file link; anything else is the self-contained hash link.
   const buildShareUrl = useCallback(() => {
+    const { origin } = window.location;
+    if (isPristine) return `${origin}/${exampleName}`;
     const encoded = compressToEncodedURIComponent(code);
-    window.history.replaceState(null, "", `#code=${encoded}`);
-    return `${window.location.origin}${window.location.pathname}#code=${encoded}`;
-  }, [code]);
+    return `${origin}/#code=${encoded}`;
+  }, [isPristine, exampleName, code]);
 
   const copyText = useCallback(async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
     } catch {
-      /* clipboard may be unavailable; the URL is still updated */
+      /* clipboard may be unavailable */
     }
     setShareOpen(false);
     setCopied(true);
@@ -404,6 +524,14 @@ export default function Home() {
   const pytestRunning = pytest.status === "loading";
   const runtimeRunning = runtime.status === "loading";
 
+  // Prev/next among the ordered examples, by the current example's position.
+  const currentIndex = examples.findIndex((e) => e.name === exampleName);
+  const prevExample = currentIndex > 0 ? examples[currentIndex - 1] : null;
+  const nextExample =
+    currentIndex >= 0 && currentIndex < examples.length - 1
+      ? examples[currentIndex + 1]
+      : null;
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <Header mode={mode} theme={theme} onToggleTheme={toggleTheme} />
@@ -417,18 +545,18 @@ export default function Home() {
             </label>
             <select
               id="example-select"
-              value={exampleId}
+              value={exampleName}
               onChange={(e) => handleSelectExample(e.target.value)}
-              className="max-w-[40%] truncate rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-xs text-text outline-none transition-colors hover:border-border-strong focus:border-accent"
+              className="max-w-[45%] truncate rounded-md border border-border bg-bg-elevated px-2.5 py-1.5 text-xs text-text outline-none transition-colors hover:border-border-strong focus:border-accent"
             >
-              {exampleId === "" && (
-                <option value="" disabled>
+              {currentIndex === -1 && (
+                <option value={exampleName} disabled>
                   Shared snippet
                 </option>
               )}
-              {EXAMPLES.map((ex) => (
-                <option key={ex.id} value={ex.id}>
-                  {ex.title}
+              {examples.map((ex) => (
+                <option key={ex.name} value={ex.name}>
+                  {ex.name} · {ex.title}
                 </option>
               ))}
             </select>
@@ -455,7 +583,7 @@ export default function Home() {
                       onClick={handleShareLink}
                       className="block w-full px-3 py-1.5 text-left text-xs text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
                     >
-                      Copy link
+                      {isPristine ? "Copy link" : "Copy link to snippet"}
                     </button>
                     <button
                       type="button"
@@ -513,7 +641,7 @@ export default function Home() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-hidden bg-bg">
-            {ready && (
+            {ready ? (
               <Editor
                 ref={editorRef}
                 value={code}
@@ -522,8 +650,21 @@ export default function Home() {
                 onRun={runDetected}
                 theme={theme}
               />
+            ) : (
+              <div className="flex h-full items-center justify-center gap-2 text-xs text-text-faint">
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-border-strong border-t-accent" />
+                Loading example…
+              </div>
             )}
           </div>
+
+          {currentIndex !== -1 && (
+            <ExampleNav
+              prev={prevExample}
+              next={nextExample}
+              onGo={handleSelectExample}
+            />
+          )}
         </section>
 
         {/* Results pane */}

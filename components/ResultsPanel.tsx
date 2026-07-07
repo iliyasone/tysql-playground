@@ -403,47 +403,6 @@ function ExecSection({
   );
 }
 
-/** One line comparing the two verdicts — the point of having both. */
-function AgreementStrip({ check, exec }: { check: CheckResult; exec: ExecResult }) {
-  const pytest = exec.pytestExit !== null;
-  const staticClean = check.exit_code === 0;
-  const runtimeClean = pytest ? exec.pytestExit === 0 : !exec.error;
-  let dot: string;
-  let text: string;
-  let message: string;
-  if (staticClean && runtimeClean) {
-    dot = "bg-success";
-    text = "text-success";
-    message = pytest
-      ? "Both suites pass — mypy and pytest agree."
-      : "Static and runtime agree — no issues.";
-  } else if (!staticClean && !runtimeClean) {
-    dot = "bg-success";
-    text = "text-success";
-    message = pytest
-      ? "Both suites fail — mypy and pytest agree."
-      : "Static and runtime agree — both reject this snippet.";
-  } else if (!staticClean && runtimeClean) {
-    dot = "bg-note";
-    text = "text-note";
-    message = pytest
-      ? "mypy rejects what pytest lets through."
-      : "The type checker catches what the runtime lets through.";
-  } else {
-    dot = "bg-warning";
-    text = "text-warning";
-    message = pytest
-      ? "pytest fails where mypy is clean."
-      : "Runtime failed where the static check was clean.";
-  }
-  return (
-    <div className="sticky bottom-0 flex items-center gap-2 border-t border-border bg-bg-elevated px-4 py-2">
-      <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
-      <p className={`text-xs font-medium ${text}`}>{message}</p>
-    </div>
-  );
-}
-
 function IdleExplainer({ mode }: { mode: PlaygroundMode }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
@@ -503,15 +462,6 @@ export default function ResultsPanel({
   const showPytest = pytestDetected || pytest.status !== "idle";
   const showRuntime = runtimeDetected || runtime.status !== "idle";
 
-  // Agreement compares the static check against the browser run — pytest is the
-  // meaningful pairing when present, otherwise the plain runtime.
-  const agreementExec =
-    pytest.status === "done"
-      ? pytest.result
-      : runtime.status === "done"
-        ? runtime.result
-        : null;
-
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
@@ -528,9 +478,6 @@ export default function ResultsPanel({
           <ExecSection title="Runtime" exec={runtime} pytest={false} />
         )}
       </div>
-      {check.status === "done" && agreementExec && (
-        <AgreementStrip check={check.result} exec={agreementExec} />
-      )}
     </div>
   );
 }

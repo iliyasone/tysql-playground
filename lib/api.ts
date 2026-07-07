@@ -30,9 +30,19 @@ export interface CheckResult {
   versions: Versions;
 }
 
+/** A bundled tysql demo snippet, served from the installed package. */
+export interface ExampleFile {
+  /** Filename, e.g. "1_dual_track.py" — also the URL path and share slug. */
+  name: string;
+  title: string;
+  code: string;
+}
+
 export interface HealthResult {
   ok: true;
   versions: Versions;
+  /** Bundled demo snippets; empty on an older tysql without the examples package. */
+  examples: ExampleFile[];
 }
 
 interface ApiError {
@@ -100,5 +110,7 @@ export async function checkCode(
 export async function getHealth(signal?: AbortSignal): Promise<HealthResult> {
   const res = await fetch("/api/check", { method: "GET", signal });
   if (!res.ok) throw new CheckError(`Health check failed (${res.status}).`, res.status);
-  return (await res.json()) as HealthResult;
+  const body = (await res.json()) as Partial<HealthResult>;
+  // `examples` was added later — an older function may omit it.
+  return { ...body, examples: body.examples ?? [] } as HealthResult;
 }

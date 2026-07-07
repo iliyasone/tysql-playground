@@ -1,221 +1,25 @@
-// Playground presets. Every snippet is valid tysql from the README/tests;
-// lines marked "error" are deliberate, to show what the checker rejects.
-// The leading comment block carries what used to be a UI blurb.
+// The playground's demo snippets are the bundled tysql examples: real .py files
+// under `tysql/examples/` in the tysql package, served by the API from whatever
+// tysql the deploy resolved (see api/check.py `_examples`, fetched via getHealth).
+// tysql is the single source of truth — this file only holds one seed snippet so
+// the editor has something to show before the health fetch resolves (and offline
+// in local dev, when the checker server may not be running).
 
-export type Example = {
-  id: string;
-  title: string;
-  code: string;
-};
+import type { ExampleFile } from "@/lib/api";
 
-export const EXAMPLES: Example[] = [
-  {
-    id: "hello",
-    title: "SELECT & projection",
-    code: `# SELECT & projection — a statement is a type.
-# Projected columns become the row type; reading any other column is a type error.
+export type Example = ExampleFile;
 
-from typing import TYPE_CHECKING, Literal
-
-from tysql import Col, Cols, PrimaryKey, Select, Table, run
-from tysql.render import render
-
-
-class User(Table):
-    id: PrimaryKey[int]
-    age: int
-    email: str
-
-
-stmt = Select[User, Cols[Col[User, Literal["id"]], Col[User, Literal["email"]]]]
-
-print(render(stmt))  # Run renders the SQL — right in your browser
-
-if TYPE_CHECKING:  # run() is the static contract; there is no database bridge yet
-    rows = run(stmt, data=None)
-    reveal_type(rows[0]["id"])     # int — inferred
-    reveal_type(rows[0]["email"])  # str — inferred
-    rows[0]["age"]  # error: "age" was not selected
-`,
-  },
-  {
-    id: "typo",
-    title: "Catch a typo",
-    code: `# Catch a typo — a column that does not exist is rejected at the reference site.
-# Run still renders the broken SQL: only the type checker stands between
-# this statement and your database.
-
-from typing import TYPE_CHECKING, Literal
-
-from tysql import Col, Cols, PrimaryKey, Select, Table, run
-from tysql.render import render
-
-
-class User(Table):
-    id: PrimaryKey[int]
-    age: int
-    email: str
-
-
-# "emial" is not a column of User — the statement itself is ill-typed
-stmt = Select[User, Cols[Col[User, Literal["emial"]]]]
-
-print(render(stmt))  # runtime happily renders SELECT "user"."emial" …
-
-if TYPE_CHECKING:
-    rows = run(stmt, data=None)  # error: Col: no such column
-`,
-  },
-  {
-    id: "where",
-    title: "WHERE & inferred params",
-    code: `# WHERE & inferred params — params in the WHERE clause become required,
-# typed keys of data=. A wrong value type is rejected.
-
-from typing import TYPE_CHECKING, Literal
-
-from tysql import Col, Cols, Eq, Param, PrimaryKey, Select, Table, Where, run
-from tysql.render import render
-
-
-class User(Table):
-    id: PrimaryKey[int]
-    age: int
-    email: str
-
-
-stmt = Select[
-    User,
-    Cols[Col[User, Literal["id"]]],
-    Where[Eq[Col[User, Literal["age"]], Param[Literal["min_age"], int]]],
-]
-
-print(render(stmt))  # SELECT … WHERE "user"."age" = %(min_age)s
-
-if TYPE_CHECKING:  # the params of run() are inferred from the statement
-    run(stmt, data={"min_age": 21})    # ok
-    run(stmt, data={"min_age": "21"})  # error: "min_age" must be int
-`,
-  },
-  {
-    id: "join",
-    title: "JOIN, COUNT & GROUP BY",
-    code: `# JOIN, COUNT & GROUP BY — an INNER JOIN with an ON predicate, a Count
-# aggregate under an alias, GROUP BY and ORDER BY. The row type is computed
-# through all of it.
-
-from datetime import datetime
-from typing import TYPE_CHECKING, Literal
-
-from tysql import (
-    As, Col, Cols, Count, Eq, ForeignKey, GroupBy, InnerJoin, On, OrderBy,
-    PrimaryKey, Select, Table, run,
-)
-from tysql.render import render
-
-
-class User(Table):
-    id: PrimaryKey[int]
-    age: int
-    email: str
-
-
-class Post(Table):
-    id: PrimaryKey[int]
-    author: ForeignKey[User, Literal["id"]]
-    created_at: datetime
-    text: str
-
-
-stmt = Select[
-    InnerJoin[User, Post, On[Eq[Col[User, Literal["id"]], Col[Post, Literal["author"]]]]],
-    Cols[Col[User, Literal["id"]], As[Count[Col[Post, Literal["id"]]], Literal["n_posts"]]],
-    GroupBy[Col[User, Literal["id"]]],
-    OrderBy[Col[User, Literal["id"]], Literal["asc"]],
-]
-
-print(render(stmt))
-
-if TYPE_CHECKING:
-    rows = run(stmt, data=None)
-    reveal_type(rows[0]["n_posts"])  # int
-`,
-  },
-  {
-    id: "scope",
-    title: "Column out of scope",
-    code: `# Column out of scope — projecting a column whose table is not in the
-# FROM/JOIN clause is caught; the column is mapped back to its table.
-
-from datetime import datetime
-from typing import TYPE_CHECKING, Literal
-
-from tysql import Col, Cols, ForeignKey, PrimaryKey, Select, Table, run
-from tysql.render import render
-
-
-class User(Table):
-    id: PrimaryKey[int]
-    age: int
-    email: str
-
-
-class Post(Table):
-    id: PrimaryKey[int]
-    author: ForeignKey[User, Literal["id"]]
-    created_at: datetime
-    text: str
-
-
-# Post.text is a real column — but Post is not in the FROM clause
-stmt = Select[User, Cols[Col[Post, Literal["text"]]]]
-
-print(render(stmt))  # runtime renders SQL that selects from the wrong table
-
-if TYPE_CHECKING:
-    rows = run(stmt, data=None)  # error: Col: table is not in the FROM clause
-`,
-  },
-  {
-    id: "pep827",
-    title: "Pure PEP 827 — no SQL",
-    code: `# Pure PEP 827 — no tysql: compute types from types.
-# Check evaluates this statically with the mypy fork; Run evaluates the very
-# same program with typemap at runtime, in your browser.
-
-from typing import Literal
-
-import typemap_extensions as tm
-from typemap.type_eval import eval_typing
-
-
-class Point:
-    x: int
-    y: float
-
-
-# A TypedDict computed from Point's annotations — names uppercased at the type level
-Loud = tm.NewTypedDict[
-    *[tm.Member[tm.Uppercase[a.name], a.type] for a in tm.Iter[tm.Attrs[Point]]]
-]
-
-
-def f(p: Loud) -> None:
-    reveal_type(p["X"])  # int — computed statically
-    reveal_type(p["Y"])  # float
-    p["x"]               # error: the key is "X" now
-
-
-print(eval_typing(tm.Uppercase[Literal["pep 827"]]))  # the same machinery, at runtime
-`,
-  },
-  {
-    id: "paired",
-    title: "Paired tests — pytest × mypy",
-    code: `# Paired tests — the metatypes convention: one feature, two adjacent tests.
-# mypy_test_X is static-only (assert_type positives, type-ignore negatives,
-# kept honest by --warn-unused-ignores); test_X is runtime (pytest +
-# eval_typing). The Test button runs both suites at once.
+// A copy of tysql/examples/1_dual_track.py — the default first example. Shown on
+// first paint; replaced by the API's canonical copy once health resolves.
+export const FALLBACK_EXAMPLE: Example = {
+  name: "1_dual_track.py",
+  title: "Paired tests",
+  code: `# Paired tests — pytest × mypy, the dual-track setup this playground runs on.
+# One feature, two adjacent tests. mypy_test_* is static-only (assert_type
+# positives, type-ignore negatives kept honest by --warn-unused-ignores);
+# test_* is runtime (pytest + eval_typing). ⌘/Ctrl+Enter runs both suites at
+# once — Check type-checks with the PEP 827 mypy fork, Test runs pytest here in
+# your browser. That both agree is the whole point of the prototype.
 
 from typing import TYPE_CHECKING, Literal, assert_type
 
@@ -228,7 +32,7 @@ class Point:
     y: float
 
 
-# A TypedDict computed from Point's annotations, names uppercased
+# A TypedDict computed from Point's annotations, names uppercased at the type level.
 type Loud = tm.NewTypedDict[
     *[tm.Member[tm.Uppercase[a.name], a.type] for a in tm.Iter[tm.Attrs[Point]]]
 ]
@@ -251,7 +55,9 @@ def test_loud_keys() -> None:  # runtime: pytest checks the evaluated class
 def test_uppercase() -> None:
     assert eval_typing(tm.Uppercase[Literal["pep 827"]]) == Literal["PEP 827"]
 `,
-  },
-];
+};
 
-export const DEFAULT_EXAMPLE_ID = "hello";
+/** True for a "<n>_<name>.py" filename — a bundled example slug / URL path. */
+export function isExampleName(name: string): boolean {
+  return /^\d+_.+\.py$/.test(name);
+}
