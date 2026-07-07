@@ -54,10 +54,12 @@ export default function Home() {
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const [versions, setVersions] = useState<Versions | null>(null);
   const [copied, setCopied] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [mode, setMode] = useState<PlaygroundMode>("tysql");
   const [theme, toggleTheme] = useTheme();
 
   const editorRef = useRef<EditorHandle>(null);
+  const shareRef = useRef<HTMLDivElement>(null);
   const inFlight = useRef<AbortController | null>(null);
   // Latest code, read inside the (stable) run handlers without re-creating them.
   const codeRef = useRef(code);
@@ -170,18 +172,53 @@ export default function Home() {
     }
   }, []);
 
-  const handleShare = useCallback(async () => {
+  // Encode the current snippet into the URL hash and return the shareable link.
+  const buildShareUrl = useCallback(() => {
     const encoded = compressToEncodedURIComponent(code);
-    const url = `${window.location.origin}${window.location.pathname}#code=${encoded}`;
     window.history.replaceState(null, "", `#code=${encoded}`);
+    return `${window.location.origin}${window.location.pathname}#code=${encoded}`;
+  }, [code]);
+
+  const copyText = useCallback(async (text: string) => {
     try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(text);
     } catch {
       /* clipboard may be unavailable; the URL is still updated */
     }
+    setShareOpen(false);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
-  }, [code]);
+  }, []);
+
+  const handleShareLink = useCallback(() => {
+    copyText(buildShareUrl());
+  }, [buildShareUrl, copyText]);
+
+  // Copy the snippet as a Markdown fenced block followed by a link back to it.
+  const handleShareMarkdown = useCallback(() => {
+    const url = buildShareUrl();
+    const body = code.replace(/\s+$/, "");
+    copyText(
+      `\`\`\`python\n${body}\n\`\`\`\n\n[Open in tysql playground](${url})`,
+    );
+  }, [buildShareUrl, code, copyText]);
+
+  // Close the share menu on outside click or Escape.
+  useEffect(() => {
+    if (!shareOpen) return;
+    const onPointer = (event: PointerEvent) => {
+      if (!shareRef.current?.contains(event.target as Node)) setShareOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShareOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [shareOpen]);
 
   const handleSelectDiagnostic = useCallback((line: number, col: number) => {
     editorRef.current?.focusLine(line, col);
@@ -219,13 +256,40 @@ export default function Home() {
             </select>
 
             <div className="ml-auto flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleShare}
-                className="rounded-md px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
-              >
-                {copied ? "Copied ✓" : "Share"}
-              </button>
+              <div ref={shareRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShareOpen((o) => !o)}
+                  aria-haspopup="menu"
+                  aria-expanded={shareOpen}
+                  className="rounded-md px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
+                >
+                  {copied ? "Copied ✓" : "Share"}
+                </button>
+                {shareOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 z-10 mt-1 min-w-[11rem] overflow-hidden rounded-md border border-border bg-bg-elevated py-1 shadow-lg"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleShareLink}
+                      className="block w-full px-3 py-1.5 text-left text-xs text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
+                    >
+                      Copy link
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={handleShareMarkdown}
+                      className="block w-full px-3 py-1.5 text-left text-xs text-text-muted transition-colors hover:bg-bg-hover hover:text-text"
+                    >
+                      Copy as Markdown
+                    </button>
+                  </div>
+                )}
+              </div>
               {!testMode && (
                 <button
                   type="button"
