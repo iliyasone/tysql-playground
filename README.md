@@ -59,8 +59,11 @@ typed. The playground works around both at cold start:
   survive bundling) is extracted to `/tmp` and passed via
   `--custom-typeshed-dir`. Regenerate it after the fork's typeshed changes:
   `tar -czf api/typeshed.tar.gz -C .venv/lib/python3.14/site-packages/mypy typeshed`
-- `tysql`/`typemap` are mirrored to `/tmp` with `py.typed` restored and served
-  through `MYPYPATH`.
+- `tysql`/`typemap`/`typemap_extensions` are mirrored to `/tmp` with `py.typed`
+  restored and served through `MYPYPATH`. For `typemap_extensions` the stripped
+  `__init__.pyi` (its entire typed interface — a one-line re-export of the fork
+  typeshed's `_typeshed/typemap.pyi`) is recreated in the mirror; without it
+  every PEP 827 combinator silently degrades to `Any`.
 
 `GET /api/check?debug=1` reports the deployed state (marker file, typeshed
 file count, applied flags, and a self-check run).

@@ -21,7 +21,7 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distribution, version
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -44,6 +44,10 @@ _MYPY_FLAGS = [
     "--no-color-output",
     "--no-error-summary",
     "--hide-error-context",
+    # Diagnostics inside tysql/typemap themselves are noise to a playground
+    # user; keep the output scoped to the snippet.
+    "--follow-imports",
+    "silent",
     "--cache-dir",
     str(_CACHE_DIR),
 ]
@@ -71,11 +75,19 @@ _FORK_MARKER = Path("typeshed", "stdlib", "_typeshed", "typemap.pyi")
 _VENDORED_TYPESHED = Path(__file__).parent / "typeshed.tar.gz"
 _EXTRACTED_TYPESHED = Path(tempfile.gettempdir()) / "tysql-playground-typeshed"
 
-# The same Vercel stripping removes py.typed from tysql/typemap, so mypy would
-# ignore their inline types (PEP 561). Their .py files survive, though — mirror
-# the packages to /tmp, restore py.typed, and serve them via MYPYPATH.
+# The same Vercel stripping removes py.typed from tysql/typemap/
+# typemap_extensions, so mypy would ignore their inline types (PEP 561). Their
+# .py files survive, though — mirror the packages to /tmp, restore py.typed,
+# and serve them via MYPYPATH.
 _DEPS_DIR = Path(tempfile.gettempdir()) / "tysql-playground-deps"
-_TYPED_DEPS = ("tysql", "typemap")
+_TYPED_DEPS = ("tysql", "typemap", "typemap_extensions")
+
+# typemap_extensions' entire typed interface is its __init__.pyi (stripped by
+# Vercel along with the rest). It is a stable one-line re-export of the fork
+# typeshed's _typeshed/typemap.pyi, so recreate it in the mirror.
+_STRIPPED_STUBS = {
+    "typemap_extensions": {"__init__.pyi": "from _typeshed.typemap import *\n"},
+}
 
 _typeshed_flags_cache: list[str] | None = None
 
@@ -121,6 +133,10 @@ def _restore_py_typed() -> None:
         dst = _DEPS_DIR / pkg
         if not dst.is_dir():
             shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
+        for stub_name, stub_source in _STRIPPED_STUBS.get(pkg, {}).items():
+            stub = dst / stub_name
+            if not stub.is_file():
+                stub.write_text(stub_source, encoding="utf-8")
         (dst / "py.typed").touch()
         mirrored = True
     if mirrored:
@@ -142,9 +158,25 @@ def _pkg_version(name: str) -> str | None:
         return None
 
 
+def _pkg_commit(name: str) -> str | None:
+    """Git commit pip resolved for a `pkg @ git+...` requirement, if any."""
+    try:
+        raw = distribution(name).read_text("direct_url.json")
+    except PackageNotFoundError:
+        return None
+    if not raw:
+        return None
+    try:
+        commit = json.loads(raw).get("vcs_info", {}).get("commit_id")
+    except json.JSONDecodeError:
+        return None
+    return commit if isinstance(commit, str) else None
+
+
 def _versions() -> dict[str, object]:
     return {
         "tysql": _pkg_version("tysql"),
+        "tysql_commit": _pkg_commit("tysql"),
         "typemap": _pkg_version("python-typemap"),
         "mypy": _pkg_version("mypy"),
         "fork": _is_fork(),
