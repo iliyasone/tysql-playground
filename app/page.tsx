@@ -7,7 +7,7 @@ import {
 } from "lz-string";
 import { EXAMPLES, DEFAULT_EXAMPLE_ID, type Example } from "@/lib/examples";
 import { checkCode, getHealth, type Diagnostic, type Versions } from "@/lib/api";
-import { runPython, PyRunError } from "@/lib/pyRunner";
+import { runPython, PyRunError, type ExecMode } from "@/lib/pyRunner";
 import { useTheme } from "@/lib/theme";
 import Header, { type PlaygroundMode } from "@/components/Header";
 import Editor, { type EditorHandle } from "@/components/Editor";
@@ -22,17 +22,34 @@ const DEFAULT_EXAMPLE: Example =
 
 const IMPORTS_TYSQL = /^\s*(from\s+tysql\b|import\s+tysql\b)/m;
 
-// The metatypes test convention: module-level test_* / mypy_test_* functions.
-// Such snippets get a combined "Test" action — pytest in the browser plus
-// mypy with the strict test-suite flags on the server.
-const LOOKS_LIKE_TESTS = /^(async\s+)?def\s+(mypy_)?test_\w+/m;
+// Three independent, composable "blocks" the snippet can opt into. Whichever
+// markers are present decide what the primary action (⌘/Ctrl+Enter) runs.
 
-// A `if __name__ == "__main__":` guard marks a runnable script — the primary
-// action then executes it in the browser alongside the type check, not just checks.
+//   pytest    — a `test_*` function → run pytest in the browser.
+const HAS_PYTEST = /^\s*(async\s+)?def\s+test_?\w*\s*\(/m;
+
+//   mypy      — a type-level assertion → type-check with the PEP 827 fork.
+const HAS_MYPY_FIXTURES = /\b(reveal_type|assert_type|TYPE_CHECKING)\b/;
+
+//   runtime   — a `if __name__ == "__main__":` guard → execute the script.
 const HAS_MAIN = /^if\s+__name__\s*==\s*(['"])__main__\1\s*:/m;
 
-// Persist the working snippet across reloads (survives close/refresh).
+// The metatypes test convention: module-level test_* / mypy_test_* functions.
+// A test suite type-checks with the strict test-suite mypy flags (mypy_test_*
+// are static-only, so this is broader than HAS_PYTEST).
+const LOOKS_LIKE_TESTS = /^(async\s+)?def\s+(mypy_)?test_\w+/m;
+
+// Persistence key, shared by both stores below.
+//   sessionStorage — per-tab, authoritative for THIS page; survives refresh and
+//     stays isolated when several links/tabs are open at once.
+//   localStorage   — the last edit from any tab; only a fallback used to seed a
+//     freshly-opened tab (or a reopened one after close).
 const STORAGE_KEY = "tysql-playground:session";
+
+interface Session {
+  code: string;
+  exampleId: string;
+}
 
 function readHashCode(): string | null {
   if (typeof window === "undefined") return null;
@@ -42,6 +59,55 @@ function readHashCode(): string | null {
     return decompressFromEncodedURIComponent(match[1]) || null;
   } catch {
     return null;
+  }
+}
+
+function readSession(store: Storage): Session | null {
+  try {
+    const raw = store.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { code?: unknown; exampleId?: unknown };
+    if (typeof parsed.code !== "string") return null;
+    return {
+      code: parsed.code,
+      exampleId: typeof parsed.exampleId === "string" ? parsed.exampleId : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+// The initial snippet for this page: a shared link wins (and is cached), then
+// this tab's own session, then the last edit from any tab, then the default.
+function resolveInitialSession(): Session {
+  const shared = readHashCode();
+  if (shared !== null) {
+    const session = { code: shared, exampleId: "" };
+    writeSession(session);
+    // Redirect to the clean site — the snippet now lives in cache, not the URL.
+    window.history.replaceState(null, "", window.location.pathname);
+    return session;
+  }
+  return (
+    readSession(window.sessionStorage) ??
+    readSession(window.localStorage) ?? {
+      code: DEFAULT_EXAMPLE.code,
+      exampleId: DEFAULT_EXAMPLE.id,
+    }
+  );
+}
+
+function writeSession(session: Session): void {
+  const raw = JSON.stringify(session);
+  try {
+    window.sessionStorage.setItem(STORAGE_KEY, raw);
+  } catch {
+    /* private mode / quota — non-fatal */
+  }
+  try {
+    window.localStorage.setItem(STORAGE_KEY, raw);
+  } catch {
+    /* private mode / quota — non-fatal */
   }
 }
 
@@ -78,6 +144,10 @@ export default function Home() {
   const [shareOpen, setShareOpen] = useState(false);
   const [mode, setMode] = useState<PlaygroundMode>("tysql");
   const [theme, toggleTheme] = useTheme();
+  // The editor mounts only once the initial (possibly cached) snippet is known,
+  // so its document starts as that snippet with a clean undo history — Ctrl+Z
+  // never rewinds past what was loaded into the page.
+  const [ready, setReady] = useState(false);
 
   const editorRef = useRef<EditorHandle>(null);
   const shareRef = useRef<HTMLDivElement>(null);
@@ -97,41 +167,24 @@ export default function Home() {
     return () => window.clearTimeout(id);
   }, [code]);
 
-  // Restore prior state after mount (reading the hash / localStorage is only
-  // possible client-side, so deriving state here is intentional). A shared
-  // link wins; otherwise fall back to the last locally-saved session.
+  // Resolve the initial snippet after mount (hash / storage are client-only, so
+  // the first render is deterministic and hydration never mismatches). A shared
+  // link is cached and stripped from the URL here.
   useEffect(() => {
-    const shared = readHashCode();
-    if (shared !== null) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setCode(shared);
-      setExampleId("");
-      return;
-    }
-    try {
-      const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (!saved) return;
-      const parsed = JSON.parse(saved) as { code?: unknown; exampleId?: unknown };
-      if (typeof parsed.code === "string") {
-        setCode(parsed.code);
-        setExampleId(typeof parsed.exampleId === "string" ? parsed.exampleId : "");
-      }
-    } catch {
-      /* corrupt or unavailable storage → keep the default example */
-    }
+    const session = resolveInitialSession();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCode(session.code);
+    setExampleId(session.exampleId);
+    setReady(true);
   }, []);
 
-  // Mirror the working snippet into localStorage so a refresh or reopen keeps it.
+  // Mirror the working snippet into storage on every edit, so a refresh or
+  // reopen keeps it. Skipped until the initial snippet is resolved, so the
+  // placeholder default is never written over a real saved session.
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ code, exampleId }),
-      );
-    } catch {
-      /* storage full or blocked (private mode) → non-fatal, just don't persist */
-    }
-  }, [code, exampleId]);
+    if (!ready) return;
+    writeSession({ code, exampleId });
+  }, [ready, code, exampleId]);
 
   // Fetch versions once for the status bar.
   useEffect(() => {
@@ -166,14 +219,15 @@ export default function Home() {
   }, []);
 
   const execRunning = exec.status === "loading";
-  const runSnippet = useCallback(async () => {
-    const pytest = LOOKS_LIKE_TESTS.test(codeRef.current);
+  const runSnippet = useCallback(async (mode?: ExecMode) => {
+    const resolved =
+      mode ?? (HAS_PYTEST.test(codeRef.current) ? "pytest" : "exec");
     setExec({ status: "loading", stage: "run" });
     try {
       const result = await runPython(
         codeRef.current,
         (stage) => setExec({ status: "loading", stage }),
-        pytest ? "pytest" : "exec",
+        resolved,
       );
       setExec({ status: "done", result });
     } catch (err) {
@@ -183,24 +237,40 @@ export default function Home() {
     }
   }, []);
 
-  // Test suites and runnable scripts (`__main__` guard) get one primary action
-  // that type-checks and executes at once; plain snippets only type-check.
-  const testMode = LOOKS_LIKE_TESTS.test(code);
-  const runMode = !testMode && HAS_MAIN.test(code);
+  // The three composable blocks, derived from the current snippet. mypy also
+  // covers test suites (strict flags) and is the fallback when nothing else is
+  // detected, so ⌘/Ctrl+Enter always does something sensible.
+  const pytestActive = HAS_PYTEST.test(code);
+  const runtimeActive = HAS_MAIN.test(code);
+  const mypyActive =
+    HAS_MYPY_FIXTURES.test(code) || LOOKS_LIKE_TESTS.test(code) || !runtimeActive;
+
   const primaryAction = useCallback(() => {
-    runCheck();
     const c = codeRef.current;
-    if (LOOKS_LIKE_TESTS.test(c) || HAS_MAIN.test(c)) runSnippet();
+    const pytest = HAS_PYTEST.test(c);
+    const runtime = HAS_MAIN.test(c);
+    const mypy =
+      HAS_MYPY_FIXTURES.test(c) || LOOKS_LIKE_TESTS.test(c) || !runtime;
+    if (mypy) runCheck();
+    // pytest and a plain script share the single Pyodide runner; a test suite
+    // takes precedence when both markers happen to be present.
+    if (pytest) runSnippet("pytest");
+    else if (runtime) runSnippet("exec");
   }, [runCheck, runSnippet]);
 
-  // Cmd/Ctrl+Enter checks from anywhere on the page; events originating inside
-  // the editor are skipped — the CodeMirror keymap handles those, and skipping
-  // avoids double runs.
+  // Cmd/Ctrl+Enter and Cmd/Ctrl+S both run the primary action from anywhere on
+  // the page. Events originating inside the editor are handled by the
+  // CodeMirror keymap instead (skipped here to avoid double runs) — except that
+  // Ctrl+S always needs its browser "save page" default suppressed.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key !== "Enter") return;
-      if (event.target instanceof Element && event.target.closest(".cm-editor"))
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key !== "enter" && key !== "s") return;
+      if (event.target instanceof Element && event.target.closest(".cm-editor")) {
+        if (key === "s") event.preventDefault();
         return;
+      }
       event.preventDefault();
       primaryAction();
     };
@@ -275,6 +345,29 @@ export default function Home() {
 
   const checking = run.status === "loading";
 
+  // A manual Run stays available only when the primary action doesn't already
+  // execute the snippet (i.e. no pytest/runtime block), so plain or mypy-only
+  // snippets can still be run in the browser on demand.
+  const showManualRun = !pytestActive && !runtimeActive;
+  const primaryBusy =
+    (mypyActive && checking) ||
+    ((pytestActive || runtimeActive) && execRunning);
+  const primaryPlay = runtimeActive && !pytestActive;
+  const primaryLabel = pytestActive
+    ? "Test"
+    : runtimeActive
+      ? mypyActive
+        ? "Check & Run"
+        : "Run"
+      : "Check";
+  const primaryTitle = pytestActive
+    ? "Run both suites: pytest in your browser + mypy with the metatypes test flags (⌘/Ctrl + Enter)"
+    : runtimeActive
+      ? mypyActive
+        ? "Type-check with the mypy fork and run the script in your browser (⌘/Ctrl + Enter)"
+        : "Run the script with Python 3.14 in your browser (⌘/Ctrl + Enter)"
+      : "Type-check with the mypy fork (⌘/Ctrl + Enter)";
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <Header mode={mode} theme={theme} onToggleTheme={toggleTheme} />
@@ -339,10 +432,10 @@ export default function Home() {
                   </div>
                 )}
               </div>
-              {!testMode && !runMode && (
+              {showManualRun && (
                 <button
                   type="button"
-                  onClick={runSnippet}
+                  onClick={() => runSnippet()}
                   disabled={execRunning}
                   title="Runs in your browser — downloads a ~20 MB Python runtime on first use"
                   className="flex items-center gap-1.5 rounded-md border border-border bg-bg-elevated px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-70"
@@ -363,22 +456,16 @@ export default function Home() {
               <button
                 type="button"
                 onClick={primaryAction}
-                disabled={checking || ((testMode || runMode) && execRunning)}
+                disabled={primaryBusy}
                 className="flex min-w-[92px] items-center justify-center gap-2 rounded-md bg-accent px-3.5 py-1.5 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-70"
-                title={
-                  testMode
-                    ? "Run both suites: pytest in your browser + mypy with the metatypes test flags (⌘/Ctrl + Enter)"
-                    : runMode
-                      ? "Type-check with the mypy fork and run the script in your browser (⌘/Ctrl + Enter)"
-                      : "Type-check with the mypy fork (⌘/Ctrl + Enter)"
-                }
+                title={primaryTitle}
               >
-                {checking || ((testMode || runMode) && execRunning) ? (
+                {primaryBusy ? (
                   <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-accent-fg/40 border-t-accent-fg" />
                 ) : (
                   <>
-                    {runMode && <PlayGlyph />}
-                    {testMode ? "Test" : runMode ? "Run" : "Check"}
+                    {primaryPlay && <PlayGlyph />}
+                    {primaryLabel}
                     <span className="font-normal opacity-70">⌘↵</span>
                   </>
                 )}
@@ -387,14 +474,16 @@ export default function Home() {
           </div>
 
           <div className="min-h-0 flex-1 overflow-hidden bg-bg">
-            <Editor
-              ref={editorRef}
-              value={code}
-              onChange={setCode}
-              diagnostics={diagnostics}
-              onRun={primaryAction}
-              theme={theme}
-            />
+            {ready && (
+              <Editor
+                ref={editorRef}
+                value={code}
+                onChange={setCode}
+                diagnostics={diagnostics}
+                onRun={primaryAction}
+                theme={theme}
+              />
+            )}
           </div>
         </section>
 
@@ -404,7 +493,10 @@ export default function Home() {
             run={run}
             exec={exec}
             mode={mode}
-            testMode={testMode}
+            versions={versions}
+            mypyActive={mypyActive}
+            pytestActive={pytestActive}
+            runtimeActive={runtimeActive}
             onSelectDiagnostic={handleSelectDiagnostic}
           />
         </section>

@@ -67,15 +67,24 @@ function Editor(
     },
   }));
 
-  // Cmd/Ctrl+Enter runs. Must be a highest-precedence keymap: basicSetup binds
-  // Mod-Enter to insertBlankLine, which would otherwise win. `onRun` is a stable
-  // callback from the page, so the editor is never reconfigured on keystroke.
+  // Cmd/Ctrl+Enter and Cmd/Ctrl+S both run. Must be a highest-precedence keymap:
+  // basicSetup binds Mod-Enter to insertBlankLine, and Mod-S is the browser's
+  // "save page" — both are overridden here. `onRun` is a stable callback from the
+  // page, so the editor is never reconfigured on keystroke.
   const runKeymap = useMemo(
     () =>
       Prec.highest(
         keymap.of([
           {
             key: "Mod-Enter",
+            run: () => {
+              onRun();
+              return true;
+            },
+          },
+          {
+            key: "Mod-s",
+            preventDefault: true,
             run: () => {
               onRun();
               return true;
